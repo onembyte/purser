@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <!-- Everything arrives over the JS bridge; the page never needs the network. -->
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'none'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src data:; font-src 'self';">
+  <title>Purser</title>
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+  <main id="root">
+    <div class="boot">
+      <div class="boot-spinner"></div>
+      <p>Starting…</p>
+    </div>
+  </main>
+
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+
+  <script src="markdown.js"></script>
+  <script src="charts.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

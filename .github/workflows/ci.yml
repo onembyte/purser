@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install PyObjC
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyobjc-core pyobjc-framework-Cocoa pyobjc-framework-WebKit
+
+      - name: Byte-compile everything
+        run: python -m compileall -q app.py setup.py csm tools
+
+      - name: Import the data layer (no GUI, no network)
+        run: |
+          python - <<'PY'
+          import csm.config as c
+          import csm.db, csm.parser, csm.queries, csm.indexer, csm.live, csm.plan
+          # Pricing/model tables must stay internally consistent.
+          assert c.price_for("claude-opus-4-8")[:2] == (5.0, 25.0)
+          assert c.model_slot("claude-sonnet-5") == 4
+          # FTS5 must be available in the runner's sqlite build.
+          import sqlite3
+          sqlite3.connect(":memory:").execute("CREATE VIRTUAL TABLE t USING fts5(x)")
+          print("data layer OK — pyobjc", __import__("objc").__version__)
+          PY
