@@ -19,6 +19,21 @@ SEVERITY_NSCOLOR = {
     "normal": lambda: AppKit.NSColor.systemGreenColor(),
 }
 
+_SEVERITY_RANK = {"critical": 3, "warning": 2, "normal": 1, None: 0}
+
+# Dropdown group order: the 5-hour window leads, then the overall weekly, then any
+# per-model weekly caps -- matching the headline the menu-bar number tracks.
+_KIND_ORDER = {"session": 0, "weekly_all": 1, "weekly_scoped": 2}
+
+
+def _limit_name(lim: dict) -> str:
+    kind = lim.get("kind")
+    base = ("5-hour session" if kind == "session"
+            else "weekly" if kind in ("weekly_all", "weekly_scoped")
+            else kind or "usage")
+    scope = lim.get("scopeModel")
+    return f"{base} ({scope})" if scope else base
+
 
 def _bar(percent: int, width: int = 10) -> str:
     filled = round(min(100, max(0, percent)) / 100 * width)
@@ -52,6 +67,29 @@ class MenuBarMonitor(AppKit.NSObject):
         self._render_menu(status)
 
     @objc.python_method
+    def _headline(self, status):
+        """The number the menu bar shows: the 5-hour session window by default.
+
+        A maxed-out per-model weekly cap (a model you aren't actively using -- Fable at
+        100% while you work in Opus) must not hijack the glanceable percentage, so only
+        the 5-hour ``session`` and overall ``weekly_all`` limits are candidates. Escalate
+        to weekly only when it is strictly more severe; per-model caps stay in the
+        dropdown.
+        """
+        first = {}
+        for lim in status.get("limits") or []:
+            first.setdefault(lim.get("kind"), lim)     # limits are severity-sorted
+        session = first.get("session")
+        weekly = first.get("weekly_all")
+        headline = session or weekly or status.get("binding") or {}
+        if session and weekly and (
+            _SEVERITY_RANK.get(weekly.get("severity"), 0)
+            > _SEVERITY_RANK.get(session.get("severity"), 0)
+        ):
+            headline = weekly
+        return headline
+
+    @objc.python_method
     def _render_button(self, status):
         button = self._item.button()
         if not status.get("available"):
@@ -61,9 +99,9 @@ class MenuBarMonitor(AppKit.NSObject):
             button.setToolTip_("No plan-usage data yet — run Claude Code")
             return
 
-        binding = status.get("binding") or {}
-        pct = int(binding.get("percent") or 0)
-        sev = binding.get("severity") or "normal"
+        headline = self._headline(status)
+        pct = int(headline.get("percent") or 0)
+        sev = headline.get("severity") or "normal"
         stale = status.get("stale")
 
         color = SEVERITY_NSCOLOR.get(sev, SEVERITY_NSCOLOR["normal"])()
@@ -81,9 +119,8 @@ class MenuBarMonitor(AppKit.NSObject):
                              AppKit.NSFont.monospacedDigitSystemFontOfSize_weight_(
                                  12, AppKit.NSFontWeightMedium)})
         button.setAttributedTitle_(title)
-        scope = f" ({binding.get('scopeModel')})" if binding.get("scopeModel") else ""
-        button.setToolTip_(f"{binding.get('kind','')}{scope}: {pct}%"
-                           + ("  (snapshot is stale)" if stale else ""))
+        button.setToolTip_(f"{_limit_name(headline)}: {pct}%"
+                           + ("  ·  snapshot is stale" if stale else ""))
 
     @objc.python_method
     def _symbol(self, name, color):
@@ -144,7 +181,8 @@ class MenuBarMonitor(AppKit.NSObject):
                         else f"{round(age/24)}d ago" if age is not None
                         else "unknown")
                 header(f"PLAN USAGE · cached, {when}")
-            for lim in status["limits"]:
+            for lim in sorted(status["limits"], key=lambda l: (
+                    _KIND_ORDER.get(l["kind"], 3), -int(l.get("percent") or 0))):
                 scope = f" {lim['scopeModel']}" if lim["scopeModel"] else ""
                 name = ("5-hour" if lim["kind"] == "session"
                         else "weekly" if lim["kind"] == "weekly_all"
