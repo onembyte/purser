@@ -59,11 +59,15 @@ HAIRLINE = lambda: _srgb(46, 46, 48)           # noqa: E731
 # Severity -> (gradient start, gradient end). Keyed by the exact strings plan.py emits.
 FILL = {
     "normal": (lambda: _srgb(48, 209, 88), lambda: _srgb(50, 215, 75)),
-    "warning": (lambda: _srgb(255, 179, 64), lambda: _srgb(255, 107, 53)),
+    # warning must not END on the colour critical BEGINS on, or a full warning bar
+    # and a fresh critical one are the same hue.
+    "warning": (lambda: _srgb(255, 212, 38), lambda: _srgb(255, 159, 10)),
     "critical": (lambda: _srgb(255, 107, 53), lambda: _srgb(255, 59, 48)),
 }
 # A stale snapshot gets a flat grey meter: colour would imply the number is current.
-FILL_STALE = lambda: _srgb(90, 90, 94)         # noqa: E731
+# #8E8E93 rather than #5A5A5E -- the latter is only 1.65:1 against the track, so a
+# 96% stale bar was indistinguishable from an empty one. This is 3.48:1.
+FILL_STALE = lambda: _srgb(142, 142, 147)      # noqa: E731
 
 CARD_W = 340.0
 PAD = 16.0
@@ -147,12 +151,38 @@ def _reset_text(iso, now=None) -> str:
     return f"Resets {when.strftime('%a %-I:%M %p')}"
 
 
+def _freshness(status: dict):
+    """-> (is_live, is_stale, badge).
+
+    `source` alone is not freshness: usage_live.latest() keeps returning the last
+    successful fetch forever, and plan.py only marks a *cache* snapshot stale, so a
+    dead network or an expired token had the card asserting "live" over hours-old
+    numbers. Age decides.
+    """
+    age = status.get("ageHours")
+    live = status.get("source") == "live" and (age is None or age < 0.5)
+    stale = bool(status.get("stale")) or (age is not None and age > 6)
+    if live:
+        badge = "live"
+    elif age is None:
+        badge = "cached"
+    elif age < 1.5:
+        badge = "just now"
+    elif age < 48:
+        badge = f"{round(age)}h ago"
+    else:
+        badge = f"{round(age / 24)}d ago"
+    return live, stale, badge
+
+
 def card_height(status: dict) -> float:
     if not status.get("available"):
         return PAD + HEADER_H + HEADER_GAP + EMPTY_H + FOOTER_GAP + FOOTER_H
     n = len(status.get("limits") or [])
     body = (n * BLOCK_H + max(0, n - 1) * BLOCK_GAP) if n else EMPTY_H
-    stale = STALE_H if status.get("stale") else 0.0
+    # Must use the SAME staleness rule _draw does, or the banner overflows the card.
+    _live, is_stale, _badge = _freshness(status)
+    stale = STALE_H if is_stale else 0.0
     return PAD + HEADER_H + HEADER_GAP + body + stale + FOOTER_GAP + FOOTER_H
 
 
@@ -202,8 +232,11 @@ class PlanCardView(AppKit.NSView):
             AppKit.NSBezierPath.fillRect_(rect)
         else:
             a, b = FILL.get(severity, FILL["normal"])
+            # Ramp across the whole TRACK, not the fill, so a given percentage is
+            # always the same hue -- otherwise a short bar compresses the entire
+            # ramp and length silently drives colour.
             AppKit.NSGradient.alloc().initWithStartingColor_endingColor_(
-                a(), b()).drawInRect_angle_(rect, 0.0)
+                a(), b()).drawInRect_angle_(AppKit.NSMakeRect(x, y, w, BAR_H), 0.0)
         ctx.restoreGraphicsState()
 
     def drawRect_(self, dirty):
@@ -241,21 +274,15 @@ class PlanCardView(AppKit.NSView):
             ctx.saveGraphicsState()
             TEXT_PRIMARY().set()
             glyph.drawInRect_fromRect_operation_fraction_respectFlipped_hints_(
-                AppKit.NSMakeRect(PAD, y + 1, 15, 15), AppKit.NSZeroRect,
+                AppKit.NSMakeRect(PAD, y + 1, 21, 15), AppKit.NSZeroRect,
                 AppKit.NSCompositingOperationSourceOver, 1.0, True, None)
             ctx.restoreGraphicsState()
         _attr("Plan Usage", f_title, TEXT_PRIMARY()).drawAtPoint_(
-            AppKit.NSMakePoint(PAD + 22, y))
+            AppKit.NSMakePoint(PAD + 28, y))
 
         if st.get("available"):
-            if st.get("source") == "live" and not st.get("stale"):
-                dot, note = FILL["normal"][0](), "live"
-            else:
-                age = st.get("ageHours")
-                dot = TEXT_SECONDARY()
-                note = ("just now" if age is not None and age < 1.5
-                        else f"{round(age)}h ago" if age is not None and age < 48
-                        else f"{round(age / 24)}d ago" if age is not None else "cached")
+            is_live, _is_stale, note = _freshness(st)
+            dot = FILL["normal"][0]() if is_live else TEXT_SECONDARY()
             s = _attr(note, f_meta, TEXT_SECONDARY())
             sw = s.size().width
             s.drawAtPoint_(AppKit.NSMakePoint(CARD_W - PAD - sw, y + 2))
@@ -271,7 +298,7 @@ class PlanCardView(AppKit.NSView):
                   TEXT_SECONDARY()).drawAtPoint_(AppKit.NSMakePoint(PAD, y))
             y += EMPTY_H
         else:
-            stale = bool(st.get("stale"))
+            _live, stale, _badge = _freshness(st)
             for i, lim in enumerate(limits):
                 _attr(_limit_name(lim), f_label, TEXT_LABEL()).drawAtPoint_(
                     AppKit.NSMakePoint(PAD, y))
@@ -366,6 +393,12 @@ class MenuBarMonitor(AppKit.NSObject):
         b.setTarget_(self)
         b.setAction_(action)
         b.setFocusRingType_(AppKit.NSFocusRingTypeNone)
+        # The popover window is never key, so without this the first click while
+        # another app is frontmost is eaten as the activating click.
+        try:
+            b.setAcceptsFirstMouse_(True)
+        except AttributeError:
+            pass
         return b
 
     @objc.python_method
@@ -437,7 +470,7 @@ class MenuBarMonitor(AppKit.NSObject):
         headline = self._headline(status)
         pct = int(headline.get("percent") or 0)
         sev = headline.get("severity") or "normal"
-        stale = status.get("stale")
+        _live, stale, _badge = _freshness(status)
 
         color = SEVERITY_NSCOLOR.get(sev, SEVERITY_NSCOLOR["normal"])()
         if stale:
