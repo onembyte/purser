@@ -27,7 +27,7 @@
     <img src="docs/download-button.svg" width="400" alt="Download Purser — macOS · Apple Silicon · .dmg" />
   </a>
   <br />
-  <sub>Unsigned build — right-click → Open on first launch.</sub>
+  <sub>Not yet notarized — after dragging to Applications, run the one-line command in <a href="#install">Install</a>.</sub>
 </p>
 
 <p align="center">
@@ -38,6 +38,40 @@
   <img src="docs/design/cleanup.png" width="356" alt="Cleanup — triage sessions by size, age, message count, or cost" />
 </p>
 <p align="center"><sub>Screenshots use a synthetic corpus — Purser reads your own <code>~/.claude</code> locally and nothing leaves the machine.</sub></p>
+
+## Install
+
+Download the DMG above, drag **Purser** to Applications, then run this once:
+
+```bash
+xattr -d com.apple.quarantine /Applications/Purser.app
+```
+
+Then open it normally. (If it replies `No such xattr`, the tag was already gone —
+just open the app.)
+
+<details>
+<summary><b>Why is that needed — and is it safe?</b></summary>
+
+macOS tags everything a browser downloads with a `com.apple.quarantine`
+attribute. Apps that aren't **notarized** by Apple are refused — often with the
+misleading message *"Purser is damaged and can't be opened"*. Nothing is damaged,
+and right-click → Open does **not** get past it for an unnotarized app. The
+command above removes the download tag — the same decision you make when you click
+through any "open anyway" dialog.
+
+Note the command is `-d`, not `-dr`: older macOS ships an `xattr` without the
+recursive `-r` flag, and clearing the tag on the bundle itself is what Gatekeeper
+checks anyway.
+
+Notarization needs a paid Apple Developer account; it's on the roadmap. Until
+then you're trusting this repo — the build is ad-hoc signed (it passes
+`codesign --verify --deep --strict`) and reproducible from source with
+`setup.py py2app`, and everything Cleanup can remove is covered by the
+[safety model](#safety). If you'd rather not run a downloaded binary, build it
+yourself — the [Getting started](#getting-started) steps produce the same app.
+
+</details>
 
 ## Why
 
@@ -154,7 +188,7 @@ flowchart LR
 ## Getting started
 
 **Just want the app?** [Download the `.dmg`](https://github.com/onembyte/purser/releases/latest/download/Purser-macOS.dmg),
-drag Purser to Applications, and right-click → Open the first time (it's unsigned).
+drag Purser to Applications, then clear the download quarantine — see [Install](#install).
 
 **Run from source** — requires macOS and [Homebrew Python](https://formulae.brew.sh/formula/python) 3.13+:
 
