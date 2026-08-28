@@ -492,9 +492,11 @@ class MenuBarMonitor(AppKit.NSObject):
             button = self._item.button()
             self._popover.showRelativeToRect_ofView_preferredEdge_(
                 button.bounds(), button, AppKit.NSRectEdgeMinY)
-            # A popover from a status item only takes key focus once the app is
-            # frontmost; without this the first click outside won't dismiss it.
-            AppKit.NSApp.activateIgnoringOtherApps_(True)
+            # Deliberately NOT activateIgnoringOtherApps_: activating the app pulls
+            # Purser's main window in front of whatever you were working in every
+            # time you glance at the meter. A transient popover installs its own
+            # event monitor, so it still takes key focus and still dismisses on an
+            # outside click without the app coming forward.
         except Exception as exc:
             print(f"popover toggle failed: {type(exc).__name__}: {exc}")
 
