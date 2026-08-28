@@ -83,6 +83,13 @@ def _font(size, weight):
     return AppKit.NSFont.systemFontOfSize_weight_(size, weight)
 
 
+def _font_digits(size, weight):
+    """Monospaced digits, and not for looks: the card refreshes every 30s while it
+    is open, so proportional figures make "51 min" -> "50 min" and a ticking
+    percentage visibly jitter as the glyph widths change."""
+    return AppKit.NSFont.monospacedDigitSystemFontOfSize_weight_(size, weight)
+
+
 def _attr(s, f, color):
     return AppKit.NSAttributedString.alloc().initWithString_attributes_(
         s, {AppKit.NSFontAttributeName: f, AppKit.NSForegroundColorAttributeName: color})
@@ -217,6 +224,7 @@ class PlanCardView(AppKit.NSView):
         f_title = _font(15, AppKit.NSFontWeightSemibold)
         f_label = _font(13, AppKit.NSFontWeightMedium)
         f_meta = _font(12, AppKit.NSFontWeightRegular)
+        f_num = _font_digits(12, AppKit.NSFontWeightRegular)
 
         inner = CARD_W - PAD * 2
         y = PAD
@@ -271,7 +279,7 @@ class PlanCardView(AppKit.NSView):
                 # already says so — don't print "reset" twice.
                 rt = "" if lim.get("reset") else _reset_text(lim.get("resetsAt"))
                 if rt:
-                    rs = _attr(rt, f_meta, TEXT_SECONDARY())
+                    rs = _attr(rt, f_num, TEXT_SECONDARY())
                     rs.drawAtPoint_(AppKit.NSMakePoint(CARD_W - PAD - rs.size().width, y + 1))
                 y += 17 + 7
                 self._draw_meter(PAD, y, inner, int(lim.get("percent") or 0),
@@ -280,7 +288,7 @@ class PlanCardView(AppKit.NSView):
                 y += BAR_H + 6
                 cap = ("Window reset" if lim.get("reset")
                        else f"{int(lim.get('percent') or 0)}% Used")
-                _attr(cap, f_meta, TEXT_SECONDARY()).drawAtPoint_(
+                _attr(cap, f_num, TEXT_SECONDARY()).drawAtPoint_(
                     AppKit.NSMakePoint(PAD, y))
                 y += 16
                 if i != len(limits) - 1:
@@ -294,7 +302,7 @@ class PlanCardView(AppKit.NSView):
         # ---------------------------------------------------------------- footer rule
         y += FOOTER_GAP
         HAIRLINE().setFill()
-        AppKit.NSBezierPath.fillRect_(AppKit.NSMakeRect(PAD, y, inner, 1))
+        AppKit.NSBezierPath.fillRect_(AppKit.NSMakeRect(PAD, y, inner, 0.5))
 
 
 # --------------------------------------------------------------------------- monitor
