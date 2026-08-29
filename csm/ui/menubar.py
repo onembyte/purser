@@ -511,7 +511,7 @@ STATUS_GLOW = lambda: _srgb(255, 255, 255, 1.0)    # noqa: E731
 STATUS_GLOW_RADIUS = 16.0
 # A single pass at this radius is too faint to reach across the grey; filling the
 # same path twice accumulates the halo without widening it.
-STATUS_GLOW_PASSES = 2
+STATUS_GLOW_PASSES = 3
 
 
 def _tab_path(w, h, corner=None, flare=None):
