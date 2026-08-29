@@ -407,7 +407,7 @@ def _ring_image(pct, color, diameter=17.0):
 
 # ----------------------------------------------------------------- status item art
 STATUS_CORNER = 16.0     # bottom corner radius of the black tab (soft, not a pill)
-STATUS_FLARE = 11.0      # concave fillet where the tab meets the screen edge
+STATUS_FLARE = 15.0      # concave fillet where the tab meets the screen edge
 STATUS_BODY_MARGIN = 3.0  # clearance between the ring/% and the flared body edge
 STATUS_PAD_X = 8.0
 STATUS_RING_D = 15.0
