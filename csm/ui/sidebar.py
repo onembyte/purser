@@ -124,9 +124,33 @@ class SidebarViewController(AppKit.NSViewController):
             n.badge = str(p.get("count", "")) or None
             n.live = bool(p.get("live"))
             kids.append(n)
+
+        # reloadData() rebinds the selection to a row INDEX: the old nodes are gone,
+        # so the highlighted row silently re-points at whatever lands there — the
+        # outline shows "Cleanup" highlighted while Overview content is on screen,
+        # and no selection-did-change fires to correct it. Capture the selection by
+        # (kind, payload) and re-select the matching new node afterwards.
+        prev = None
+        row = self._outline.selectedRow()
+        if row >= 0:
+            item = self._outline.itemAtRow_(row)
+            if item is not None and not item.is_group:
+                prev = (item.kind, item.payload)
+
         self._projects.children = kids
         self._outline.reloadData()
         self._outline.expandItem_(self._projects)
+
+        if prev is None:
+            return
+        for root in self._roots:
+            for child in root.children:
+                if (child.kind, child.payload) == prev:
+                    new_row = self._outline.rowForItem_(child)
+                    if new_row >= 0:
+                        self._outline.selectRowIndexes_byExtendingSelection_(
+                            AppKit.NSIndexSet.indexSetWithIndex_(new_row), False)
+                        return
 
     @objc.python_method
     def select_kind(self, kind: str):

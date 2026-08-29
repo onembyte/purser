@@ -201,9 +201,11 @@ def parse_usage_only(path: Path) -> Usage:
                     rec = json.loads(line)
                 except Exception:
                     continue
-                if rec.get("type") != "assistant":
+                if not isinstance(rec, dict) or rec.get("type") != "assistant":
                     continue
-                msg = rec.get("message") or {}
+                msg = rec.get("message")
+                if not isinstance(msg, dict):
+                    continue
                 u = msg.get("usage")
                 if isinstance(u, dict):
                     usage.add(msg.get("model") or "unknown", rec.get("timestamp"), u)
@@ -275,7 +277,12 @@ def parse_session(path: Path, session_id: str) -> SessionParse:
                 if v:
                     setattr(out, attr, v)
 
-            message = rec.get("message") or {}
+            # `message` has no shape contract in the wild: a str or list here (seen in
+            # real files) must skip the record's text, not AttributeError out of the
+            # whole reindex pass.
+            message = rec.get("message")
+            if not isinstance(message, dict):
+                message = {}
             fts_text = None
 
             if rtype == "user":

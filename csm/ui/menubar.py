@@ -48,13 +48,16 @@ def _srgb(r, g, b, a=1.0):
         r / 255.0, g / 255.0, b / 255.0, a)
 
 
-CARD_BG = lambda: _srgb(28, 28, 30)            # noqa: E731 - lazy, see module docstring
-TRACK = lambda: _srgb(58, 58, 60)              # noqa: E731
+# Glass palette: a near-black panel with a faint top sheen, hairline light edge and
+# pill meters — the "clean glass HUD" look of the reference design.
+CARD_BG_TOP = lambda: _srgb(26, 26, 29)        # noqa: E731 - lazy, see module docstring
+CARD_BG_BOTTOM = lambda: _srgb(11, 11, 13)     # noqa: E731
+TRACK = lambda: _srgb(56, 56, 61)              # noqa: E731
 TEXT_PRIMARY = lambda: _srgb(255, 255, 255)    # noqa: E731
 TEXT_LABEL = lambda: _srgb(245, 245, 247)      # noqa: E731
-TEXT_SECONDARY = lambda: _srgb(142, 142, 147)  # noqa: E731
-TEXT_TERTIARY = lambda: _srgb(120, 120, 125)   # noqa: E731
-HAIRLINE = lambda: _srgb(46, 46, 48)           # noqa: E731
+TEXT_SECONDARY = lambda: _srgb(152, 152, 158)  # noqa: E731
+TEXT_TERTIARY = lambda: _srgb(110, 110, 116)   # noqa: E731
+HAIRLINE = lambda: _srgb(255, 255, 255, 0.10)  # noqa: E731
 
 # Severity -> (gradient start, gradient end). Keyed by the exact strings plan.py emits.
 FILL = {
@@ -72,7 +75,7 @@ FILL_STALE = lambda: _srgb(142, 142, 147)      # noqa: E731
 CARD_W = 340.0
 PAD = 16.0
 BAR_H = 8.0
-CARD_RADIUS = 14.0
+CARD_RADIUS = 18.0
 HEADER_H = 20.0
 HEADER_GAP = 14.0
 BLOCK_H = 54.0          # label 17 + gap 7 + bar 8 + gap 6 + caption 16
@@ -249,10 +252,21 @@ class PlanCardView(AppKit.NSView):
     def _draw(self):
         st = self._status
         bounds = self.bounds()
-        AppKit.NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
-            bounds, CARD_RADIUS, CARD_RADIUS).addClip()
-        CARD_BG().setFill()
-        AppKit.NSBezierPath.fillRect_(bounds)
+        # Glass panel: near-black fill with a faint top sheen, then a hairline light
+        # edge just inside the clip — the two details that make the card read as a
+        # floating HUD instead of a flat grey box.
+        shape = AppKit.NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
+            bounds, CARD_RADIUS, CARD_RADIUS)
+        shape.addClip()
+        # 270° in this flipped view puts the START colour at the top.
+        AppKit.NSGradient.alloc().initWithStartingColor_endingColor_(
+            CARD_BG_TOP(), CARD_BG_BOTTOM()).drawInRect_angle_(bounds, 270.0)
+        edge = AppKit.NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
+            AppKit.NSInsetRect(bounds, 0.5, 0.5),
+            CARD_RADIUS - 0.5, CARD_RADIUS - 0.5)
+        HAIRLINE().setStroke()
+        edge.setLineWidth_(1.0)
+        edge.stroke()
 
         f_title = _font(15, AppKit.NSFontWeightSemibold)
         f_label = _font(13, AppKit.NSFontWeightMedium)
@@ -330,6 +344,63 @@ class PlanCardView(AppKit.NSView):
         y += FOOTER_GAP
         HAIRLINE().setFill()
         AppKit.NSBezierPath.fillRect_(AppKit.NSMakeRect(PAD, y, inner, 0.5))
+
+
+# --------------------------------------------------------------------------- ring
+def _ring_image(pct, color, diameter=17.0):
+    """A rounded-cap progress ring — the reference widget's gauge — drawn into a
+    2x bitmap so it stays crisp on retina menu bars; the percentage beside it is
+    rendered by the caller. Track uses labelColour so it adapts to light and dark
+    menu bars, the arc the severity colour. Returns None on any failure so the
+    caller falls back to the SF Symbol gauge."""
+    try:
+        scale = 2           # Apple's standard @2x — higher scales confuse AppKit scaling
+        px = int(diameter * scale)
+        rep = AppKit.NSBitmapImageRep.alloc().\
+            initWithBitmapDataPlanes_pixelsWide_pixelsHigh_bitsPerSample_samplesPerPixel_hasAlpha_isPlanar_colorSpaceName_bytesPerRow_bitsPerPixel_(
+                None, px, px, 8, 4, True, False,
+                AppKit.NSCalibratedRGBColorSpace, 0, 0)
+        # No rep.setSize_ here: tagging the rep with a smaller point size makes the
+        # bitmap context scale user space, and every coordinate drawn below lands 2x
+        # off. The untagged rep composites fine — NSImage initWithSize_ already says
+        # the image is `diameter` points.
+        ctx = AppKit.NSGraphicsContext.graphicsContextWithBitmapImageRep_(rep)
+        if ctx is None:
+            return None
+        prev = AppKit.NSGraphicsContext.currentContext()
+        AppKit.NSGraphicsContext.setCurrentContext_(ctx)
+        try:
+            centre = AppKit.NSMakePoint(px / 2.0, px / 2.0)
+            # Padding for the 2.5pt round caps keeps the stroke inside the bitmap.
+            r = px / 2.0 - 2.75 * scale
+            lw = 2.5 * scale
+            track = AppKit.NSBezierPath.bezierPath()
+            # clockwise=False: a 0->360 arc with clockwise=True sweeps the same
+            # point both ways and collapses to an empty path — the track would
+            # silently never render, leaving pct=0 as a blank status item.
+            track.appendBezierPathWithArcWithCenter_radius_startAngle_endAngle_clockwise_(
+                centre, r, 0.0, 360.0, False)
+            track.setLineWidth_(lw)
+            AppKit.NSColor.labelColor().colorWithAlphaComponent_(0.25).setStroke()
+            track.stroke()
+            sweep = 360.0 * min(100, max(0, pct)) / 100.0
+            if sweep > 0:
+                arc = AppKit.NSBezierPath.bezierPath()
+                # 90° is 12 o'clock in AppKit's angle convention; clockwise=True
+                # walks the hand the way a meter fills (12 -> 3 -> 6 -> 9).
+                arc.appendBezierPathWithArcWithCenter_radius_startAngle_endAngle_clockwise_(
+                    centre, r, 90.0, 90.0 - sweep, True)
+                arc.setLineWidth_(lw)
+                arc.setLineCapStyle_(AppKit.NSRoundLineCapStyle)
+                color.setStroke()
+                arc.stroke()
+        finally:
+            AppKit.NSGraphicsContext.setCurrentContext_(prev)
+        img = AppKit.NSImage.alloc().initWithSize_(AppKit.NSMakeSize(diameter, diameter))
+        img.addRepresentation_(rep)
+        return img
+    except Exception:
+        return None
 
 
 # --------------------------------------------------------------------------- monitor
@@ -479,7 +550,7 @@ class MenuBarMonitor(AppKit.NSObject):
         sym = ("gauge.with.dots.needle.100percent" if pct >= 90
                else "gauge.with.dots.needle.67percent" if pct >= 40
                else "gauge.with.dots.needle.33percent")
-        button.setImage_(self._symbol(sym, color))
+        button.setImage_(_ring_image(pct, color) or self._symbol(sym, color))
 
         title = AppKit.NSAttributedString.alloc().initWithString_attributes_(
             f" {pct}%", {AppKit.NSForegroundColorAttributeName: color,

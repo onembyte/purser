@@ -683,7 +683,12 @@ register("search", async (host, params) => {
 
 /* ------------------------------------------------------------------ plan usage */
 const SEVERITY_COLOR = {
-  critical: "#ff453a", warning: "#ff9f0a", normal: "var(--series-2)",
+  // Pill meters get gradient fills (the glass HUD look); green for healthy,
+  // amber as a window fills, red-orange when it is effectively spent. Used as
+  // plain CSS background values — never parsed or mixed.
+  critical: "linear-gradient(90deg, #ff6b35, #ff3b30)",
+  warning: "linear-gradient(90deg, #ffd426, #ff9f0a)",
+  normal: "linear-gradient(90deg, #30d158, #2ec06a)",
 };
 
 function meter(label, percent, severity, sub) {

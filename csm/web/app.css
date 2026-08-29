@@ -3,21 +3,27 @@
 :root {
   --accent: #0a84ff;
 
-  --bg: #ffffff;
+  --bg: #f2f2f5;
   --bg-elev: #ffffff;
-  --bg-sunken: #f5f5f7;
-  --fill: rgba(0, 0, 0, 0.05);
+  --bg-sunken: #e7e8ec;
+  --fill: rgba(0, 0, 0, 0.045);
   --fill-strong: rgba(0, 0, 0, 0.08);
-  --sep: rgba(0, 0, 0, 0.10);
+  --sep: rgba(0, 0, 0, 0.09);
   --sep-strong: rgba(0, 0, 0, 0.16);
 
   --text: rgba(0, 0, 0, 0.85);
   --text-2: rgba(0, 0, 0, 0.5);
   --text-3: rgba(0, 0, 0, 0.26);
 
-  --shadow: 0 1px 2px rgba(0, 0, 0, 0.06), 0 4px 14px rgba(0, 0, 0, 0.05);
-  --radius: 10px;
-  --radius-sm: 6px;
+  /* Glass language shared with the menu-bar card: panels float on a softened ground
+     with a hairline edge (—sep) and a one-pixel top highlight (--glass-hi); overlays
+     (toasts, tooltips, the sticky footer) blur what passes beneath them. */
+  --glass-bg: rgba(255, 255, 255, 0.78);
+  --glass-hi: inset 0 1px 0 rgba(255, 255, 255, 0.8);
+
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.06), 0 8px 24px rgba(0, 0, 0, 0.07);
+  --radius: 14px;
+  --radius-sm: 8px;
 
   --grid: 8px;
   --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
@@ -28,7 +34,9 @@
      chroma floor, adjacent CVD separation (worst ΔE 9.1 light / 8.4 dark) and the
      normal-vision floor (19.6 / 19.3). Slot order is fixed and is the CVD-safety
      mechanism — do not reorder or cycle. Light slots 3/4/5 sit under 3:1 on white,
-     so charts using them ship a legend + labels (the relief rule), never colour alone. */
+     so charts using them ship a legend + labels (the relief rule), never colour alone.
+     The dark glass surface (#1b1b1f) is darker than every mark, so those results
+     continue to hold on it. */
   --series-1: #2a78d6;  /* blue    */
   --series-2: #008300;  /* green   */
   --series-3: #e87ba4;  /* magenta */
@@ -40,7 +48,8 @@
 }
 
 :root[data-theme="dark"] {
-  /* Same eight hues re-stepped for the dark surface — a selected palette, not a flip. */
+  /* Same eight hues re-stepped for the dark surface — a selected palette, not a flip.
+     Hues are unchanged from the validated set; only the surface moved. */
   --series-1: #3987e5;
   --series-2: #008300;
   --series-3: #d55181;
@@ -52,19 +61,22 @@
 }
 
 :root[data-theme="dark"] {
-  --bg: #1e1e1e;
-  --bg-elev: #262626;
-  --bg-sunken: #171717;
-  --fill: rgba(255, 255, 255, 0.06);
+  --bg: #101013;
+  --bg-elev: #1b1b1f;
+  --bg-sunken: #0a0a0c;
+  --fill: rgba(255, 255, 255, 0.055);
   --fill-strong: rgba(255, 255, 255, 0.10);
-  --sep: rgba(255, 255, 255, 0.10);
-  --sep-strong: rgba(255, 255, 255, 0.18);
+  --sep: rgba(255, 255, 255, 0.09);
+  --sep-strong: rgba(255, 255, 255, 0.17);
 
-  --text: rgba(255, 255, 255, 0.88);
-  --text-2: rgba(255, 255, 255, 0.55);
+  --text: rgba(255, 255, 255, 0.90);
+  --text-2: rgba(255, 255, 255, 0.56);
   --text-3: rgba(255, 255, 255, 0.30);
 
-  --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 4px 14px rgba(0, 0, 0, 0.3);
+  --glass-bg: rgba(24, 24, 28, 0.72);
+  --glass-hi: inset 0 1px 0 rgba(255, 255, 255, 0.07);
+
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.5), 0 10px 30px rgba(0, 0, 0, 0.45);
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -129,9 +141,11 @@ body { overflow-x: hidden; }
   pointer-events: none;
 }
 .toast {
-  background: var(--bg-elev);
+  background: var(--glass-bg);
+  -webkit-backdrop-filter: blur(18px) saturate(1.5);
+  backdrop-filter: blur(18px) saturate(1.5);
   border: 0.5px solid var(--sep-strong);
-  box-shadow: var(--shadow);
+  box-shadow: var(--shadow), var(--glass-hi);
   border-radius: var(--radius);
   padding: 8px 14px;
   font-size: 12px;
@@ -186,6 +200,7 @@ body { overflow-x: hidden; }
   border-radius: var(--radius);
   overflow: hidden;
   background: var(--bg-elev);
+  box-shadow: var(--glass-hi);
 }
 /* Fixed tracks, not `auto`: each row is its own grid, so auto-sized columns would
    size per-row and the chips/dates/costs would fail to line up down the list.
@@ -268,6 +283,7 @@ body { overflow-x: hidden; }
 .card {
   border: 0.5px solid var(--sep); border-radius: var(--radius);
   background: var(--bg-elev); padding: calc(var(--grid) * 1.5);
+  box-shadow: var(--glass-hi);
 }
 .card .k { font-size: 10px; color: var(--text-3); text-transform: uppercase;
            letter-spacing: 0.05em; }
@@ -353,8 +369,11 @@ details.tool.err summary { color: #ff453a; }
 
 .tip {
   position: fixed; z-index: 200; pointer-events: none;
-  background: var(--bg-elev); border: 0.5px solid var(--sep-strong);
-  box-shadow: var(--shadow); border-radius: var(--radius-sm);
+  background: var(--glass-bg);
+  -webkit-backdrop-filter: blur(18px) saturate(1.5);
+  backdrop-filter: blur(18px) saturate(1.5);
+  border: 0.5px solid var(--sep-strong);
+  box-shadow: var(--shadow), var(--glass-hi); border-radius: var(--radius-sm);
   padding: 7px 9px; font-size: 11px; min-width: 150px;
 }
 .tip .th { font-weight: 600; margin-bottom: 4px; color: var(--text); }
@@ -385,6 +404,7 @@ mark { background: color-mix(in srgb, var(--accent) 35%, transparent); color: in
 .hit-group {
   border: 0.5px solid var(--sep); border-radius: var(--radius);
   background: var(--bg-elev); margin-bottom: var(--grid); overflow: hidden;
+  box-shadow: var(--glass-hi);
 }
 .hit-head {
   display: flex; align-items: baseline; gap: var(--grid);
@@ -417,7 +437,10 @@ mark { background: color-mix(in srgb, var(--accent) 35%, transparent); color: in
 .footer {
   position: sticky; bottom: 0; display: flex; align-items: center; gap: var(--grid);
   padding: calc(var(--grid) * 1.5) calc(var(--grid) * 4);
-  background: var(--bg-elev); border-top: 0.5px solid var(--sep-strong);
+  background: var(--glass-bg);
+  -webkit-backdrop-filter: blur(18px) saturate(1.5);
+  backdrop-filter: blur(18px) saturate(1.5);
+  border-top: 0.5px solid var(--sep-strong);
   box-shadow: 0 -4px 14px rgba(0,0,0,0.06);
 }
 .footer-label { font-size: 12px; color: var(--text-2); font-variant-numeric: tabular-nums; }
@@ -498,15 +521,15 @@ h5.md-h, h6.md-h { font-size: 12.5px; color: var(--text-2); }
 .meter-head { display: flex; justify-content: space-between; align-items: baseline; }
 .meter-label { font-size: 12px; color: var(--text-2); }
 .meter-pct { font-size: 14px; font-weight: 650; font-variant-numeric: tabular-nums; }
-.meter-track { height: 7px; border-radius: 4px; background: var(--fill-strong);
+.meter-track { height: 7px; border-radius: 999px; background: var(--fill-strong);
                overflow: hidden; margin: 5px 0 3px; }
-.meter-fill { height: 100%; border-radius: 4px; transition: width 0.3s ease-out; }
+.meter-fill { height: 100%; border-radius: 999px; transition: width 0.3s ease-out; }
 .meter-sub { font-size: 10.5px; color: var(--text-3); }
 
 .plan-row { grid-template-columns: 14px minmax(0,1fr) 120px 54px 66px; }
-.share-bar { height: 6px; border-radius: 3px; background: var(--fill-strong);
+.share-bar { height: 6px; border-radius: 999px; background: var(--fill-strong);
              overflow: hidden; }
-.share-fill { height: 100%; background: var(--series-1); border-radius: 3px; }
+.share-fill { height: 100%; background: var(--series-1); border-radius: 999px; }
 .inline-link { color: var(--accent); cursor: default; }
 .inline-link:hover { text-decoration: underline; }
 .live-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%;

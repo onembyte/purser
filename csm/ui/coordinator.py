@@ -162,16 +162,24 @@ class Coordinator:
             blocked = [i for i in ids if i in running]
             todo = [i for i in ids if i not in running]
 
-            paths, freed = [], 0
+            paths, sids_with_paths = [], {}
             for sid in todo:
                 try:
                     s = queries.session(sid)
-                    freed += s["totalBytes"]
-                    paths.extend(queries.session_paths(sid))
+                    p_list = queries.session_paths(sid)
+                    sids_with_paths[sid] = (s["totalBytes"], p_list)
+                    paths.extend(p_list)
                 except KeyError:
                     pass
 
             result = actions.trash_paths(paths)
+            # Only count bytes for sessions that were actually moved to the Trash: a
+            # failed assertion or already-missing file stays on disk, and counting its
+            # size would overstate what cleanup freed. A session whose paths only
+            # partly trashed keeps data on disk, so it counts as not freed.
+            trashed = set(result["trashed"])
+            freed = sum(total for total, p_list in sids_with_paths.values()
+                        if trashed.issuperset(p_list))
             for sid in todo:
                 indexer.drop_session(sid)
             AppHelper.callAfter(self.refresh_sidebar)

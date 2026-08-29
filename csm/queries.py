@@ -452,7 +452,13 @@ def search(q: str, cwd: str | None = None, limit: int = 300) -> dict:
     try:
         rows = run(q)
     except _sqlite3.OperationalError:
-        rows = run(_quote_query(q))          # user typed FTS5-hostile input
+        try:
+            # Quoted form fixes operator/quote noise, but a query that reduces to
+            # nothing (just `"` characters) yields MATCH '' — a syntax error again.
+            # An unsearchable input returns zero hits, same as a search with no match.
+            rows = run(_quote_query(q)) if _quote_query(q).strip() else []
+        except _sqlite3.OperationalError:
+            rows = []
 
     by_session: dict[str, dict] = {}
     for r in rows:

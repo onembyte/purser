@@ -11,11 +11,8 @@ from __future__ import annotations
 
 import json
 import os
-import time
 
 from csm import config
-
-STALE_AFTER = 24 * 3600  # a record older than this is treated as dead even if pid exists
 
 
 def _pid_alive(pid: int) -> bool:
@@ -35,7 +32,6 @@ def live_sessions() -> dict[str, dict]:
     out: dict[str, dict] = {}
     if not config.LIVE_DIR.is_dir():
         return out
-    now = time.time()
     try:
         entries = list(config.LIVE_DIR.iterdir())
     except OSError:
@@ -55,9 +51,13 @@ def live_sessions() -> dict[str, dict]:
         if not sid or not isinstance(pid, int):
             continue
 
-        updated = rec.get("updatedAt")
-        if isinstance(updated, (int, float)) and now - (updated / 1000.0) > STALE_AFTER:
-            continue
+        # Only pid liveness may exclude a record here. The old 24h-updatedAt gate was
+        # a pid-reuse defence, but it excluded merely IDLE live processes — a session
+        # parked at a dialog over a weekend stopped being locked in Cleanup while the
+        # process kept appending to its files, so trashing it corrupted a running
+        # session. Asymmetry of cost decides: a recycled-pid phantom costs one
+        # untrashable row nobody will ever miss; a wrong exclusion costs transcript
+        # data. When in doubt, lock.
         if not _pid_alive(pid):
             continue
 
