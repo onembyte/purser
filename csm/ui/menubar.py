@@ -406,8 +406,8 @@ def _ring_image(pct, color, diameter=17.0):
 
 
 # ----------------------------------------------------------------- status item art
-STATUS_CORNER = 13.0     # bottom corner radius of the black tab (soft, not a pill)
-STATUS_FLARE = 6.0       # concave fillet where the tab meets the screen edge
+STATUS_CORNER = 16.0     # bottom corner radius of the black tab (soft, not a pill)
+STATUS_FLARE = 7.0       # concave fillet where the tab meets the screen edge
 STATUS_PAD_X = 8.0
 STATUS_RING_D = 15.0
 STATUS_GAP = 5.0
@@ -498,15 +498,16 @@ def _status_image(pct, color, height, show_pct=True, tab=False, draw_bg=None):
             cy = height / 2.0
             r = STATUS_RING_D / 2.0 - 1.6
             lw = 2.3
-            # No track on the tab: any unfilled ring reads as a grey circle sitting
-            # behind the arc, which is exactly the artefact we are removing. Off the
-            # tab a faint track is useful to show the arc's proportion.
-            if not tab:
+            # No track at all: the unfilled ring is the grey circle sitting behind
+            # the arc. The one exception is an empty gauge, where without a track
+            # there would be nothing to see at all.
+            if pct <= 0:
                 track = AppKit.NSBezierPath.bezierPath()
                 track.appendBezierPathWithArcWithCenter_radius_startAngle_endAngle_clockwise_(
                     AppKit.NSMakePoint(cx, cy), r, 0.0, 360.0, False)
                 track.setLineWidth_(lw)
-                AppKit.NSColor.labelColor().colorWithAlphaComponent_(0.25).setStroke()
+                (AppKit.NSColor.whiteColor().colorWithAlphaComponent_(0.30) if tab
+                 else AppKit.NSColor.labelColor().colorWithAlphaComponent_(0.30)).setStroke()
                 track.stroke()
             sweep = 360.0 * min(100, max(0, pct)) / 100.0
             if sweep > 0:
