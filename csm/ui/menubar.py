@@ -405,6 +405,90 @@ def _ring_image(pct, color, diameter=17.0):
         return None
 
 
+# ----------------------------------------------------------------- status item art
+STATUS_CORNER = 9.0      # bottom corner radius of the black tab
+STATUS_PAD_X = 8.0
+STATUS_RING_D = 15.0
+STATUS_GAP = 5.0
+STATUS_BG = lambda: _srgb(0, 0, 0, 0.92)       # noqa: E731 - "plain glass black"
+
+
+def _status_image(pct, color, height, show_pct=True):
+    """The whole status item drawn as one image: a black tab with a SQUARE top and
+    rounded bottom corners, the ring, and the percentage.
+
+    Square top is the point — the tab runs the full height of the menu bar so it
+    bleeds into the top edge of the screen and reads as part of the bezel, while the
+    bottom keeps the pill shape. Drawn as one image (rather than image + title) so we
+    own every pixel and the system's grey highlight capsule can be switched off.
+    Returns None on failure; the caller falls back to the plain SF Symbol.
+    """
+    try:
+        font = AppKit.NSFont.monospacedDigitSystemFontOfSize_weight_(
+            12, AppKit.NSFontWeightMedium)
+        label = _attr(f"{int(pct)}%", font, TEXT_PRIMARY()) if show_pct else None
+        tw = label.size().width if label is not None else 0.0
+        width = STATUS_PAD_X * 2 + STATUS_RING_D + (STATUS_GAP + tw if label else 0.0)
+
+        scale = 2
+        px_w, px_h = int(width * scale), int(height * scale)
+        rep = AppKit.NSBitmapImageRep.alloc().\
+            initWithBitmapDataPlanes_pixelsWide_pixelsHigh_bitsPerSample_samplesPerPixel_hasAlpha_isPlanar_colorSpaceName_bytesPerRow_bitsPerPixel_(
+                None, px_w, px_h, 8, 4, True, False,
+                AppKit.NSCalibratedRGBColorSpace, 0, 0)
+        ctx = AppKit.NSGraphicsContext.graphicsContextWithBitmapImageRep_(rep)
+        if ctx is None:
+            return None
+        prev = AppKit.NSGraphicsContext.currentContext()
+        AppKit.NSGraphicsContext.setCurrentContext_(ctx)
+        try:
+            xf = AppKit.NSAffineTransform.transform()
+            xf.scaleBy_(scale)
+            xf.concat()
+
+            # Rounded rect taller than the canvas: its top corners fall off the top,
+            # leaving a square top and rounded bottom without hand-building the path.
+            AppKit.NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
+                AppKit.NSMakeRect(0, 0, width, height + STATUS_CORNER * 2),
+                STATUS_CORNER, STATUS_CORNER).addClip()
+            STATUS_BG().setFill()
+            AppKit.NSBezierPath.fillRect_(AppKit.NSMakeRect(0, 0, width, height))
+
+            cx = STATUS_PAD_X + STATUS_RING_D / 2.0
+            cy = height / 2.0
+            r = STATUS_RING_D / 2.0 - 1.6
+            lw = 2.3
+            track = AppKit.NSBezierPath.bezierPath()
+            track.appendBezierPathWithArcWithCenter_radius_startAngle_endAngle_clockwise_(
+                AppKit.NSMakePoint(cx, cy), r, 0.0, 360.0, False)
+            track.setLineWidth_(lw)
+            AppKit.NSColor.whiteColor().colorWithAlphaComponent_(0.22).setStroke()
+            track.stroke()
+            sweep = 360.0 * min(100, max(0, pct)) / 100.0
+            if sweep > 0:
+                arc = AppKit.NSBezierPath.bezierPath()
+                arc.appendBezierPathWithArcWithCenter_radius_startAngle_endAngle_clockwise_(
+                    AppKit.NSMakePoint(cx, cy), r, 90.0, 90.0 - sweep, True)
+                arc.setLineWidth_(lw)
+                arc.setLineCapStyle_(AppKit.NSRoundLineCapStyle)
+                color.setStroke()
+                arc.stroke()
+
+            if label is not None:
+                ty = (height - label.size().height) / 2.0
+                label.drawAtPoint_(AppKit.NSMakePoint(
+                    STATUS_PAD_X + STATUS_RING_D + STATUS_GAP, ty))
+        finally:
+            AppKit.NSGraphicsContext.setCurrentContext_(prev)
+
+        img = AppKit.NSImage.alloc().initWithSize_(AppKit.NSMakeSize(width, height))
+        img.addRepresentation_(rep)
+        img.setTemplate_(False)
+        return img
+    except Exception:
+        return None
+
+
 # --------------------------------------------------------------------------- monitor
 class MenuBarMonitor(AppKit.NSObject):
     def initWithOnOpen_(self, on_open):
@@ -416,7 +500,16 @@ class MenuBarMonitor(AppKit.NSObject):
         bar = AppKit.NSStatusBar.systemStatusBar()
         self._item = bar.statusItemWithLength_(AppKit.NSVariableStatusItemLength)
         button = self._item.button()
-        button.setImagePosition_(AppKit.NSImageLeft)
+        # The whole item is one image we draw ourselves, so switch off the system's
+        # grey highlight capsule (drawn while the popover is open) — it would sit
+        # behind the black tab and round off its square top.
+        button.setImagePosition_(AppKit.NSImageOnly)
+        try:
+            cell = button.cell()
+            cell.setHighlightsBy_(0)
+            cell.setShowsStateBy_(0)
+        except Exception:
+            pass
         # No setMenu_: the button drives the popover itself.
         button.setTarget_(self)
         button.setAction_("togglePopover:")
@@ -533,9 +626,12 @@ class MenuBarMonitor(AppKit.NSObject):
     @objc.python_method
     def _render_button(self, status):
         button = self._item.button()
+        thickness = AppKit.NSStatusBar.systemStatusBar().thickness()
         if not status.get("available"):
-            button.setImage_(self._symbol("gauge.with.dots.needle.bottom.0percent",
-                                          AppKit.NSColor.secondaryLabelColor()))
+            img = _status_image(0, TEXT_SECONDARY(), thickness, show_pct=False)
+            button.setImage_(img or self._symbol(
+                "gauge.with.dots.needle.bottom.0percent",
+                AppKit.NSColor.secondaryLabelColor()))
             button.setTitle_("")
             button.setToolTip_("No plan-usage data yet — run Claude Code")
             return
@@ -549,17 +645,23 @@ class MenuBarMonitor(AppKit.NSObject):
         if stale:
             color = AppKit.NSColor.secondaryLabelColor()   # don't imply it's current
 
-        sym = ("gauge.with.dots.needle.100percent" if pct >= 90
-               else "gauge.with.dots.needle.67percent" if pct >= 40
-               else "gauge.with.dots.needle.33percent")
-        button.setImage_(_ring_image(pct, color) or self._symbol(sym, color))
-
-        title = AppKit.NSAttributedString.alloc().initWithString_attributes_(
-            f" {pct}%", {AppKit.NSForegroundColorAttributeName: color,
-                         AppKit.NSFontAttributeName:
-                             AppKit.NSFont.monospacedDigitSystemFontOfSize_weight_(
-                                 12, AppKit.NSFontWeightMedium)})
-        button.setAttributedTitle_(title)
+        img = _status_image(pct, color, thickness)
+        if img is not None:
+            button.setImage_(img)
+            button.setTitle_("")
+        else:
+            # Fall back to the plain symbol + text if drawing ever fails.
+            sym = ("gauge.with.dots.needle.100percent" if pct >= 90
+                   else "gauge.with.dots.needle.67percent" if pct >= 40
+                   else "gauge.with.dots.needle.33percent")
+            button.setImagePosition_(AppKit.NSImageLeft)
+            button.setImage_(self._symbol(sym, color))
+            button.setAttributedTitle_(
+                AppKit.NSAttributedString.alloc().initWithString_attributes_(
+                    f" {pct}%", {AppKit.NSForegroundColorAttributeName: color,
+                                 AppKit.NSFontAttributeName:
+                                     AppKit.NSFont.monospacedDigitSystemFontOfSize_weight_(
+                                         12, AppKit.NSFontWeightMedium)}))
         button.setToolTip_(f"{_limit_name_short(headline)}: {pct}%"
                            + ("  ·  snapshot is stale" if stale else ""))
 
