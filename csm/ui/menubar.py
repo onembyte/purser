@@ -27,6 +27,7 @@ from datetime import datetime, timezone
 import AppKit
 import objc
 
+from csm import codex as codex_mod
 from csm import plan as plan_mod
 
 SEVERITY_NSCOLOR = {
@@ -58,6 +59,8 @@ TEXT_LABEL = lambda: _srgb(245, 245, 247)      # noqa: E731
 TEXT_SECONDARY = lambda: _srgb(152, 152, 158)  # noqa: E731
 TEXT_TERTIARY = lambda: _srgb(110, 110, 116)   # noqa: E731
 HAIRLINE = lambda: _srgb(255, 255, 255, 0.10)  # noqa: E731
+SEG_ON = lambda: _srgb(255, 255, 255, 0.14)    # noqa: E731 - selected provider pill
+SEG_OFF = lambda: _srgb(255, 255, 255, 0.05)   # noqa: E731
 
 # Severity -> (gradient start, gradient end). Keyed by the exact strings plan.py emits.
 FILL = {
@@ -84,6 +87,12 @@ STALE_H = 24.0
 FOOTER_GAP = 12.0
 FOOTER_H = 40.0
 EMPTY_H = 18.0
+SEG_H = 24.0            # provider selector row
+SEG_GAP = 12.0
+SEG_RADIUS = 7.0
+CONSUMPTION_H = 20.0    # the "N tokens across M sessions" line under Codex
+
+PROVIDERS = (("claude", "Claude"), ("codex", "Codex"))
 
 
 def _font(size, weight):
@@ -104,6 +113,8 @@ def _attr(s, f, color):
 
 def _limit_name(lim: dict) -> str:
     """Long form used inside the card."""
+    if lim.get("label"):                 # providers that name their own windows
+        return lim["label"].capitalize()
     kind = lim.get("kind")
     if kind == "session":
         return "Current session"
@@ -116,6 +127,9 @@ def _limit_name(lim: dict) -> str:
 
 def _limit_name_short(lim: dict) -> str:
     """Compact form used in the status-item tooltip."""
+    if lim.get("label"):
+        return f"Codex {lim['label']}" if str(lim.get("kind","")).startswith("codex") \
+            else lim["label"]
     kind = lim.get("kind")
     base = ("5-hour session" if kind == "session"
             else "weekly" if kind in ("weekly_all", "weekly_scoped")
@@ -178,15 +192,18 @@ def _freshness(status: dict):
     return live, stale, badge
 
 
-def card_height(status: dict) -> float:
+def card_height(status: dict, consumption: bool = False) -> float:
+    seg = SEG_H + SEG_GAP
     if not status.get("available"):
-        return PAD + HEADER_H + HEADER_GAP + EMPTY_H + FOOTER_GAP + FOOTER_H
+        return PAD + HEADER_H + HEADER_GAP + seg + EMPTY_H + FOOTER_GAP + FOOTER_H
     n = len(status.get("limits") or [])
     body = (n * BLOCK_H + max(0, n - 1) * BLOCK_GAP) if n else EMPTY_H
     # Must use the SAME staleness rule _draw does, or the banner overflows the card.
     _live, is_stale, _badge = _freshness(status)
     stale = STALE_H if is_stale else 0.0
-    return PAD + HEADER_H + HEADER_GAP + body + stale + FOOTER_GAP + FOOTER_H
+    extra = CONSUMPTION_H if consumption else 0.0
+    return (PAD + HEADER_H + HEADER_GAP + seg + body + stale + extra
+            + FOOTER_GAP + FOOTER_H)
 
 
 # --------------------------------------------------------------------------- the card
@@ -199,7 +216,9 @@ class PlanCardView(AppKit.NSView):
         if self is None:
             return None
         self._status = status or {}
-        self.setFrameSize_(AppKit.NSMakeSize(CARD_W, card_height(self._status)))
+        self._codex = {}
+        self._provider = "claude"
+        self._resize()
         return self
 
     def isFlipped(self):
@@ -208,8 +227,41 @@ class PlanCardView(AppKit.NSView):
     # setStatus_ is a selector so it can be called from anywhere without ceremony.
     def setStatus_(self, status):
         self._status = status or {}
-        self.setFrameSize_(AppKit.NSMakeSize(CARD_W, card_height(self._status)))
+        self._resize()
         self.setNeedsDisplay_(True)
+
+    def setCodexStatus_(self, status):
+        self._codex = status or {}
+        self._resize()
+        self.setNeedsDisplay_(True)
+
+    def setProvider_(self, name):
+        self._provider = "codex" if str(name) == "codex" else "claude"
+        self._resize()
+        self.setNeedsDisplay_(True)
+
+    @objc.python_method
+    def provider(self):
+        return self._provider
+
+    @objc.python_method
+    def displayed(self):
+        return self._codex if self._provider == "codex" else self._status
+
+    @objc.python_method
+    def _resize(self):
+        st = self.displayed()
+        h = card_height(st, consumption=(self._provider == "codex"
+                                         and bool(st.get("tokensTotal"))))
+        self.setFrameSize_(AppKit.NSMakeSize(CARD_W, h))
+
+    @objc.python_method
+    def segment_rects(self):
+        """Frames of the two selector pills, top-left origin (the view is flipped)."""
+        y = PAD + HEADER_H + HEADER_GAP
+        w = (CARD_W - PAD * 2 - 6) / 2.0
+        return [AppKit.NSMakeRect(PAD + i * (w + 6), y, w, SEG_H)
+                for i in range(len(PROVIDERS))]
 
     @objc.python_method
     def status(self):
@@ -250,7 +302,7 @@ class PlanCardView(AppKit.NSView):
 
     @objc.python_method
     def _draw(self):
-        st = self._status
+        st = self.displayed()
         bounds = self.bounds()
         # Glass panel: near-black fill with a faint top sheen, then a hairline light
         # edge just inside the clip — the two details that make the card read as a
@@ -307,11 +359,29 @@ class PlanCardView(AppKit.NSView):
                 AppKit.NSMakeRect(CARD_W - PAD - sw - 12, y + 7, 6, 6)).fill()
         y += HEADER_H + HEADER_GAP
 
+        # ------------------------------------------------------- provider selector
+        for (key, name), rect in zip(PROVIDERS, self.segment_rects()):
+            on = (key == self._provider)
+            pill = AppKit.NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
+                rect, SEG_RADIUS, SEG_RADIUS)
+            (SEG_ON() if on else SEG_OFF()).setFill()
+            pill.fill()
+            lab = _attr(name, _font(12, AppKit.NSFontWeightMedium),
+                        TEXT_PRIMARY() if on else TEXT_SECONDARY())
+            sz = lab.size()
+            lab.drawAtPoint_(AppKit.NSMakePoint(
+                rect.origin.x + (rect.size.width - sz.width) / 2.0,
+                rect.origin.y + (rect.size.height - sz.height) / 2.0))
+        y += SEG_H + SEG_GAP
+
         # ---------------------------------------------------------------- blocks
         limits = _ordered(st.get("limits") or []) if st.get("available") else []
         if not limits:
-            _attr("No plan data yet — run Claude Code", f_meta,
-                  TEXT_SECONDARY()).drawAtPoint_(AppKit.NSMakePoint(PAD, y))
+            msg = ("No Codex usage found — run the codex CLI"
+                   if self._provider == "codex"
+                   else "No plan data yet — run Claude Code")
+            _attr(msg, f_meta, TEXT_SECONDARY()).drawAtPoint_(
+                AppKit.NSMakePoint(PAD, y))
             y += EMPTY_H
         else:
             _live, stale, _badge = _freshness(st)
@@ -336,10 +406,26 @@ class PlanCardView(AppKit.NSView):
                 y += 16
                 if i != len(limits) - 1:
                     y += BLOCK_GAP
+            if self._provider == "codex" and st.get("tokensTotal"):
+                tot = int(st["tokensTotal"])
+                n = int(st.get("sessions") or 0)
+                human = (f"{tot / 1e9:.1f}B" if tot >= 1e9
+                         else f"{tot / 1e6:.1f}M" if tot >= 1e6
+                         else f"{tot / 1e3:.0f}K" if tot >= 1e3 else str(tot))
+                plan = st.get("planType")
+                bits = [f"{human} tokens", f"{n} session{'' if n == 1 else 's'}"]
+                if plan:
+                    bits.append(str(plan).capitalize())
+                _attr(" · ".join(bits), f_num, TEXT_SECONDARY()).drawAtPoint_(
+                    AppKit.NSMakePoint(PAD, y))
+                y += CONSUMPTION_H
             if stale:
                 y += 6
-                _attr("Snapshot is stale — open Claude Code to refresh",
-                      f_meta, TEXT_TERTIARY()).drawAtPoint_(AppKit.NSMakePoint(PAD, y))
+                note = ("Codex snapshot is stale — run the codex CLI to refresh"
+                        if self._provider == "codex"
+                        else "Snapshot is stale — open Claude Code to refresh")
+                _attr(note, f_meta, TEXT_TERTIARY()).drawAtPoint_(
+                    AppKit.NSMakePoint(PAD, y))
                 y += 18
 
         # ---------------------------------------------------------------- footer rule
@@ -407,8 +493,11 @@ def _ring_image(pct, color, diameter=17.0):
 
 # ----------------------------------------------------------------- status item art
 STATUS_CORNER = 16.0     # bottom corner radius of the black tab (soft, not a pill)
-STATUS_FLARE = 15.0      # concave fillet where the tab meets the screen edge
-STATUS_BODY_MARGIN = 3.0  # clearance between the ring/% and the flared body edge
+# The exposed grey on each side is EXACTLY this value: the tab's body is inset by
+# the flare, macOS draws its capsule across the whole item, so any flare > 0 leaves
+# the capsule's rounded end showing. Covering the grey completely means flare = 0.
+STATUS_FLARE = 0.0       # concave fillet where the tab meets the screen edge
+STATUS_BODY_MARGIN = 14.0  # clearance between the ring/% and the flared body edge
 STATUS_PAD_X = 8.0
 STATUS_RING_D = 15.0
 STATUS_GAP = 5.0
@@ -609,8 +698,17 @@ class MenuBarMonitor(AppKit.NSObject):
         # Every one of these MUST be an instance attribute. A local would be released
         # the moment init returns and the popover would silently never appear.
         self._card = PlanCardView.alloc().initWithStatus_(status)
+        # Seed Codex too, or selecting it before the first 30s refresh shows the
+        # empty state instead of the data already on disk.
+        self._card.setCodexStatus_(self._codex_status())
+        self._seg_btns = [
+            self._segment_button(name, "selectClaude:" if key == "claude"
+                                 else "selectCodex:")
+            for key, name in PROVIDERS]
         self._open_btn = self._footer_button("Open Plan Details", "openPlan:", False)
         self._refresh_btn = self._footer_button("Refresh", "refreshNow:", True)
+        for b in self._seg_btns:
+            self._card.addSubview_(b)
         self._card.addSubview_(self._open_btn)
         self._card.addSubview_(self._refresh_btn)
 
@@ -660,7 +758,28 @@ class MenuBarMonitor(AppKit.NSObject):
         return b
 
     @objc.python_method
+    def _segment_button(self, title, action):
+        """Transparent hit target over the drawn pill: the visuals stay in drawRect_
+        while VoiceOver and the keyboard still see a real control."""
+        b = AppKit.NSButton.alloc().initWithFrame_(AppKit.NSMakeRect(0, 0, 10, SEG_H))
+        b.setBordered_(False)
+        b.setButtonType_(AppKit.NSButtonTypeMomentaryChange)
+        b.setTransparent_(True)
+        b.setTitle_(title)
+        b.setToolTip_(f"Show {title} usage")
+        b.setTarget_(self)
+        b.setAction_(action)
+        b.setFocusRingType_(AppKit.NSFocusRingTypeNone)
+        try:
+            b.setAcceptsFirstMouse_(True)
+        except AttributeError:
+            pass
+        return b
+
+    @objc.python_method
     def _layout_footer(self):
+        for b, rect in zip(self._seg_btns, self._card.segment_rects()):
+            b.setFrame_(rect)
         h = self._card.frame().size.height
         top = h - FOOTER_H + 11
         ow = self._open_btn.attributedTitle().size().width + 4
@@ -677,6 +796,14 @@ class MenuBarMonitor(AppKit.NSObject):
             print(f"plan status failed: {type(exc).__name__}: {exc}")
             return {"available": False, "source": "none"}
 
+    @objc.python_method
+    def _codex_status(self):
+        try:
+            return codex_mod.codex_status()
+        except Exception as exc:
+            print(f"codex status failed: {type(exc).__name__}: {exc}")
+            return {"available": False, "source": "none"}
+
     # ------------------------------------------------------------------ update
     @objc.python_method
     def refresh(self):
@@ -684,8 +811,9 @@ class MenuBarMonitor(AppKit.NSObject):
         try:
             status = self._status()
             self._last_status = status
-            self._render_button(status)
             self._card.setStatus_(status)
+            self._card.setCodexStatus_(self._codex_status())
+            self._render_button(self._shown_status())
             self._layout_footer()
             # Resize the open popover in place so a limit appearing or a window
             # resetting doesn't clip the card or leave a dead strip at the bottom.
@@ -695,11 +823,20 @@ class MenuBarMonitor(AppKit.NSObject):
             print(f"menu bar refresh failed: {type(exc).__name__}: {exc}")
 
     @objc.python_method
+    def _shown_status(self):
+        """The status the menu-bar number reflects: whichever provider the card is
+        showing, so selecting Codex switches what you are monitoring."""
+        try:
+            return self._card.displayed() or {}
+        except Exception:
+            return self._last_status or {}
+
+    @objc.python_method
     def _paint(self):
         """Redraw just the status item — used when the popover opens or closes, since
         the black tab is only worn while it is open."""
         try:
-            self._render_button(self._last_status or self._status())
+            self._render_button(self._shown_status() or self._status())
         except Exception as exc:
             print(f"status repaint failed: {type(exc).__name__}: {exc}")
 
@@ -717,7 +854,11 @@ class MenuBarMonitor(AppKit.NSObject):
             first.setdefault(lim.get("kind"), lim)     # limits are severity-sorted
         session = first.get("session")
         weekly = first.get("weekly_all")
-        headline = session or weekly or status.get("binding") or {}
+        # Providers other than Claude have their own kinds and no `binding`; for them
+        # the worst limit IS the headline (limits arrive sorted by severity/percent).
+        fallback = status.get("binding") or (
+            (status.get("limits") or [{}])[0] if status.get("limits") else {})
+        headline = session or weekly or fallback or {}
         if session and weekly and (
             _SEVERITY_RANK.get(weekly.get("severity"), 0)
             > _SEVERITY_RANK.get(session.get("severity"), 0)
@@ -865,6 +1006,23 @@ class MenuBarMonitor(AppKit.NSObject):
             # outside click without the app coming forward.
         except Exception as exc:
             print(f"popover toggle failed: {type(exc).__name__}: {exc}")
+
+    def selectClaude_(self, sender):
+        self._select("claude")
+
+    def selectCodex_(self, sender):
+        self._select("codex")
+
+    @objc.python_method
+    def _select(self, provider):
+        try:
+            self._card.setProvider_(provider)
+            self._layout_footer()
+            if self._popover.isShown():
+                self._popover.setContentSize_(self._card.frame().size)
+            self._paint()
+        except Exception as exc:
+            print(f"provider select failed: {type(exc).__name__}: {exc}")
 
     def openPlan_(self, sender):
         try:
