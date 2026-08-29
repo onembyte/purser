@@ -258,9 +258,11 @@ class PlanCardView(AppKit.NSView):
         shape = AppKit.NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
             bounds, CARD_RADIUS, CARD_RADIUS)
         shape.addClip()
-        # 270° in this flipped view puts the START colour at the top.
+        # This view is FLIPPED, which inverts NSGradient's angle convention: 270°
+        # puts the start colour at the BOTTOM (measured: top #0D0D0F, bottom #18181B
+        # — the sheen upside down). 90° is what lights the top edge here.
         AppKit.NSGradient.alloc().initWithStartingColor_endingColor_(
-            CARD_BG_TOP(), CARD_BG_BOTTOM()).drawInRect_angle_(bounds, 270.0)
+            CARD_BG_TOP(), CARD_BG_BOTTOM()).drawInRect_angle_(bounds, 90.0)
         edge = AppKit.NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
             AppKit.NSInsetRect(bounds, 0.5, 0.5),
             CARD_RADIUS - 0.5, CARD_RADIUS - 0.5)
