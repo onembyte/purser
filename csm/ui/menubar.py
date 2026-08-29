@@ -407,10 +407,45 @@ def _ring_image(pct, color, diameter=17.0):
 
 # ----------------------------------------------------------------- status item art
 STATUS_CORNER = 13.0     # bottom corner radius of the black tab (soft, not a pill)
+STATUS_FLARE = 6.0       # concave fillet where the tab meets the screen edge
 STATUS_PAD_X = 8.0
 STATUS_RING_D = 15.0
 STATUS_GAP = 5.0
 STATUS_BG = lambda: _srgb(0, 0, 0, 1.0)         # noqa: E731 - plain black
+
+
+def _tab_path(w, h, corner=None, flare=None):
+    """The tab outline, in an UNFLIPPED box: y=0 is the bottom, y=h the screen edge.
+
+    Convex rounded corners at the bottom, and where it meets the screen edge the sides
+    flare OUT to the full width through a concave fillet — the centre of curvature
+    sits outside the shape, so the black looks like liquid pulled to the border rather
+    than a rectangle stopping at it.
+    """
+    corner = STATUS_CORNER if corner is None else corner
+    flare = STATUS_FLARE if flare is None else flare
+    flare = max(0.0, min(flare, w / 2.0))
+    corner = max(0.0, min(corner, (w - 2 * flare) / 2.0, h - flare))
+    left, right = flare, w - flare              # the body sits inside the flares
+
+    p = AppKit.NSBezierPath.bezierPath()
+    p.moveToPoint_(AppKit.NSMakePoint(0.0, h))                 # full width at the edge
+    p.lineToPoint_(AppKit.NSMakePoint(w, h))
+    # concave fillet, top right: centre OUTSIDE the body
+    p.appendBezierPathWithArcWithCenter_radius_startAngle_endAngle_clockwise_(
+        AppKit.NSMakePoint(w, h - flare), flare, 90.0, 180.0, False)
+    p.lineToPoint_(AppKit.NSMakePoint(right, corner))
+    p.appendBezierPathWithArcWithCenter_radius_startAngle_endAngle_clockwise_(
+        AppKit.NSMakePoint(right - corner, corner), corner, 0.0, -90.0, True)
+    p.lineToPoint_(AppKit.NSMakePoint(left + corner, 0.0))
+    p.appendBezierPathWithArcWithCenter_radius_startAngle_endAngle_clockwise_(
+        AppKit.NSMakePoint(left + corner, corner), corner, 270.0, 180.0, True)
+    p.lineToPoint_(AppKit.NSMakePoint(left, h - flare))
+    # concave fillet, top left
+    p.appendBezierPathWithArcWithCenter_radius_startAngle_endAngle_clockwise_(
+        AppKit.NSMakePoint(0.0, h - flare), flare, 0.0, 90.0, False)
+    p.closePath()
+    return p
 
 
 def _status_image(pct, color, height, show_pct=True, tab=False, draw_bg=None):
@@ -456,14 +491,8 @@ def _status_image(pct, color, height, show_pct=True, tab=False, draw_bg=None):
             xf.concat()
 
             if draw_bg:
-                # Rounded rect taller than the canvas: its top corners fall off the
-                # top, leaving a square top and rounded bottom without hand-building
-                # the path.
-                AppKit.NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
-                    AppKit.NSMakeRect(0, 0, width, height + STATUS_CORNER * 2),
-                    STATUS_CORNER, STATUS_CORNER).addClip()
                 STATUS_BG().setFill()
-                AppKit.NSBezierPath.fillRect_(AppKit.NSMakeRect(0, 0, width, height))
+                _tab_path(width, height).fill()
 
             cx = STATUS_PAD_X + STATUS_RING_D / 2.0
             cy = height / 2.0
@@ -534,16 +563,17 @@ class _StatusBackdrop(AppKit.NSView):
             if not self._active:
                 return
             b = self.bounds()
-            extra = STATUS_CORNER * 2
-            # Put the rounded corners on the visual BOTTOM and push the top ones off
-            # the canvas, so the tab is square where it meets the screen edge.
-            rect = (AppKit.NSMakeRect(0, -extra, b.size.width, b.size.height + extra)
-                    if self.isFlipped()
-                    else AppKit.NSMakeRect(0, 0, b.size.width, b.size.height + extra))
-            AppKit.NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
-                rect, STATUS_CORNER, STATUS_CORNER).addClip()
+            ctx = AppKit.NSGraphicsContext.currentContext()
+            ctx.saveGraphicsState()
+            if self.isFlipped():
+                # _tab_path is written for y-up; flip so the flare lands at the edge.
+                t = AppKit.NSAffineTransform.transform()
+                t.translateXBy_yBy_(0.0, b.size.height)
+                t.scaleXBy_yBy_(1.0, -1.0)
+                t.concat()
             STATUS_BG().setFill()
-            AppKit.NSBezierPath.fillRect_(b)
+            _tab_path(b.size.width, b.size.height).fill()
+            ctx.restoreGraphicsState()
         except Exception:
             pass
 
