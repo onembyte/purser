@@ -516,22 +516,20 @@ STATUS_GLOW_PASSES = 3
 
 # --- tab animation ------------------------------------------------------------
 # The tab hangs from the top edge, so "how far it has dropped" is just its height.
-# Opening uses a damped oscillation about the resting height: it overshoots (clipped
-# by the window, which is exactly the tab's height) and then visibly pulls back up
-# before settling — that dip is the bounce. Closing cannot bounce after it is gone,
-# so it anticipates downward (also clipped) and snaps up.
-TAB_OPEN_SECONDS = 0.45
-TAB_CLOSE_SECONDS = 0.22
+# A plain slide, no overshoot in either direction: it eases out on the way down so it
+# settles rather than stopping dead, and eases in on the way up so it accelerates
+# away. Both curves are monotonic — nothing here can bounce.
+TAB_OPEN_SECONDS = 0.28
+TAB_CLOSE_SECONDS = 0.20
 TAB_FPS = 60.0
 
 
 def _tab_open_progress(t: float) -> float:
-    return 1.0 - math.exp(-2.6 * t) * math.cos(11.0 * t)
+    return 1.0 - (1.0 - t) ** 3          # easeOutCubic: 0 -> 1
 
 
 def _tab_close_progress(t: float) -> float:
-    c1 = 1.70158
-    return 1.0 - ((c1 + 1.0) * t ** 3 - c1 * t ** 2)
+    return 1.0 - t ** 3                  # easeInCubic: 1 -> 0
 
 
 def _tab_path(w, h, corner=None, flare=None):
