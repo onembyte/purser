@@ -407,7 +407,8 @@ def _ring_image(pct, color, diameter=17.0):
 
 # ----------------------------------------------------------------- status item art
 STATUS_CORNER = 16.0     # bottom corner radius of the black tab (soft, not a pill)
-STATUS_FLARE = 7.0       # concave fillet where the tab meets the screen edge
+STATUS_FLARE = 11.0      # concave fillet where the tab meets the screen edge
+STATUS_BODY_MARGIN = 3.0  # clearance between the ring/% and the flared body edge
 STATUS_PAD_X = 8.0
 STATUS_RING_D = 15.0
 STATUS_GAP = 5.0
@@ -802,18 +803,20 @@ class MenuBarMonitor(AppKit.NSObject):
 
     @objc.python_method
     def _pin_length(self, img, tab):
-        """While the tab is worn the item must be exactly as wide as the image.
+        """Pin the item width so the flared body still clears the ring and percentage.
 
-        With the default variable length macOS pads the item (measured: a 55.3pt
-        image in a 71pt item) and centres the image, so the system's own grey
-        highlight shows down both sides of the black. Pinning the width makes the
-        black the whole item. Released back to variable when the tab comes off.
+        The tab's body is inset by STATUS_FLARE on each side, and macOS's default
+        variable length only pads the item by ~16pt total — which caps the flare at
+        about 7pt before the body is narrower than the image it has to contain.
+        Pinning to image + 2*flare + margin decouples the two, and keeping it pinned
+        in BOTH states avoids the item changing width as the popover opens.
         """
         try:
-            if tab and img is not None:
-                self._item.setLength_(img.size().width)
-            else:
+            if img is None:
                 self._item.setLength_(AppKit.NSVariableStatusItemLength)
+                return
+            self._item.setLength_(
+                img.size().width + 2 * STATUS_FLARE + 2 * STATUS_BODY_MARGIN)
         except Exception:
             pass
 
