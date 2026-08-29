@@ -699,8 +699,14 @@ function meter(label, percent, severity, sub) {
   row.append(head);
   const track = el("div", "meter-track");
   const fill = el("div", "meter-fill");
-  fill.style.width = Math.min(100, percent) + "%";
+  const pct = Math.min(100, Math.max(0, percent));
+  fill.style.width = pct + "%";
   fill.style.background = SEVERITY_COLOR[severity] || SEVERITY_COLOR.normal;
+  // Ramp across the whole TRACK, not the fill. background-size resolves against the
+  // fill's own box, so scaling it by track/fill makes a given percentage always the
+  // same hue; without this a short bar squeezes the entire ramp into a few pixels and
+  // bar length silently drives colour. (Set after `background`, which resets it.)
+  fill.style.backgroundSize = pct > 0 ? `${10000 / pct}% 100%` : "100% 100%";
   track.append(fill);
   row.append(track);
   if (sub) row.append(el("div", "meter-sub", sub));
