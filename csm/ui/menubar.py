@@ -493,10 +493,11 @@ def _ring_image(pct, color, diameter=17.0):
 
 # ----------------------------------------------------------------- status item art
 STATUS_CORNER = 16.0     # bottom corner radius of the black tab (soft, not a pill)
-# The exposed grey on each side is EXACTLY this value: the tab's body is inset by
-# the flare, macOS draws its capsule across the whole item, so any flare > 0 leaves
-# the capsule's rounded end showing. Covering the grey completely means flare = 0.
-STATUS_FLARE = 0.0       # concave fillet where the tab meets the screen edge
+# NOTE the trade-off: the exposed grey on each side is EXACTLY this value. The tab's
+# body is inset by the flare while macOS draws its capsule across the whole item, so
+# any flare > 0 leaves the capsule's rounded end showing. Flare 0 covers the grey
+# completely but loses the shape; the flare is kept here by choice.
+STATUS_FLARE = 15.0      # concave fillet where the tab meets the screen edge
 STATUS_BODY_MARGIN = 14.0  # clearance between the ring/% and the flared body edge
 STATUS_PAD_X = 8.0
 STATUS_RING_D = 15.0
