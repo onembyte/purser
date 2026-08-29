@@ -21,6 +21,7 @@ Two rules this file has to keep:
 """
 from __future__ import annotations
 
+import math
 import time
 from datetime import datetime, timezone
 
@@ -513,6 +514,25 @@ STATUS_GLOW_RADIUS = 16.0
 # same path twice accumulates the halo without widening it.
 STATUS_GLOW_PASSES = 3
 
+# --- tab animation ------------------------------------------------------------
+# The tab hangs from the top edge, so "how far it has dropped" is just its height.
+# Opening uses a damped oscillation about the resting height: it overshoots (clipped
+# by the window, which is exactly the tab's height) and then visibly pulls back up
+# before settling — that dip is the bounce. Closing cannot bounce after it is gone,
+# so it anticipates downward (also clipped) and snaps up.
+TAB_OPEN_SECONDS = 0.45
+TAB_CLOSE_SECONDS = 0.22
+TAB_FPS = 60.0
+
+
+def _tab_open_progress(t: float) -> float:
+    return 1.0 - math.exp(-2.6 * t) * math.cos(11.0 * t)
+
+
+def _tab_close_progress(t: float) -> float:
+    c1 = 1.70158
+    return 1.0 - ((c1 + 1.0) * t ** 3 - c1 * t ** 2)
+
 
 def _tab_path(w, h, corner=None, flare=None):
     """The tab outline, in an UNFLIPPED box: y=0 is the bottom, y=h the screen edge.
@@ -648,20 +668,62 @@ class _StatusBackdrop(AppKit.NSView):
         if self is None:
             return None
         self._active = False
+        self._progress = 0.0        # 0 = fully retracted, 1 = fully dropped
+        self._timer = None
+        self._t0 = 0.0
+        self._closing = False
         return self
 
     def setActive_(self, active):
         active = bool(active)
-        if active != self._active:
-            self._active = active
+        if active == self._active:
+            return
+        self._active = active
+        self._closing = not active
+        self._t0 = time.monotonic()
+        self._stopTimer()
+        if self.window() is None:
+            # Not on screen: no point animating, just land on the end state.
+            self._progress = 1.0 if active else 0.0
             self.setNeedsDisplay_(True)
+            return
+        self._timer = AppKit.NSTimer.scheduledTimerWithTimeInterval_repeats_block_(
+            1.0 / TAB_FPS, True, lambda _t: self._step())
+        AppKit.NSRunLoop.currentRunLoop().addTimer_forMode_(
+            self._timer, AppKit.NSRunLoopCommonModes)
+        self._step()
+
+    @objc.python_method
+    def _stopTimer(self):
+        if self._timer is not None:
+            try:
+                self._timer.invalidate()
+            except Exception:
+                pass
+            self._timer = None
+
+    @objc.python_method
+    def _step(self):
+        try:
+            dur = TAB_CLOSE_SECONDS if self._closing else TAB_OPEN_SECONDS
+            t = (time.monotonic() - self._t0) / dur
+            if t >= 1.0:
+                self._progress = 0.0 if self._closing else 1.0
+                self._stopTimer()
+            else:
+                p = (_tab_close_progress(t) if self._closing
+                     else _tab_open_progress(t))
+                self._progress = max(0.0, min(1.0, p))
+            self.setNeedsDisplay_(True)
+        except Exception:
+            self._stopTimer()
 
     def hitTest_(self, point):
         return None          # purely decorative: never swallow a click
 
     def drawRect_(self, dirty):
         try:
-            if not self._active:
+            if self._progress <= 0.001:
                 return
             b = self.bounds()
             ctx = AppKit.NSGraphicsContext.currentContext()
@@ -672,7 +734,16 @@ class _StatusBackdrop(AppKit.NSView):
                 t.translateXBy_yBy_(0.0, b.size.height)
                 t.scaleXBy_yBy_(1.0, -1.0)
                 t.concat()
-            path = _tab_path(b.size.width, b.size.height)
+            # Anchor the tab to the TOP edge and let its height carry the drop, so
+            # it grows downward out of the bezel rather than sliding as a block.
+            drop = b.size.height * self._progress
+            if self.isFlipped():
+                pass                       # y already grows downward from the edge
+            else:
+                t2 = AppKit.NSAffineTransform.transform()
+                t2.translateXBy_yBy_(0.0, b.size.height - drop)
+                t2.concat()
+            path = _tab_path(b.size.width, drop)
             # The halo is drawn as a shadow of the tab itself: same outline, no
             # offset, so it spreads evenly into the grey on both sides.
             glow = AppKit.NSShadow.alloc().init()
