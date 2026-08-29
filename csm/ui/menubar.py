@@ -406,7 +406,7 @@ def _ring_image(pct, color, diameter=17.0):
 
 
 # ----------------------------------------------------------------- status item art
-STATUS_CORNER = 9.0      # bottom corner radius of the black tab
+STATUS_CORNER = 13.0     # bottom corner radius of the black tab (soft, not a pill)
 STATUS_PAD_X = 8.0
 STATUS_RING_D = 15.0
 STATUS_GAP = 5.0
@@ -469,13 +469,16 @@ def _status_image(pct, color, height, show_pct=True, tab=False, draw_bg=None):
             cy = height / 2.0
             r = STATUS_RING_D / 2.0 - 1.6
             lw = 2.3
-            track = AppKit.NSBezierPath.bezierPath()
-            track.appendBezierPathWithArcWithCenter_radius_startAngle_endAngle_clockwise_(
-                AppKit.NSMakePoint(cx, cy), r, 0.0, 360.0, False)
-            track.setLineWidth_(lw)
-            (AppKit.NSColor.whiteColor().colorWithAlphaComponent_(0.22) if tab
-             else AppKit.NSColor.labelColor().colorWithAlphaComponent_(0.25)).setStroke()
-            track.stroke()
+            # No track on the tab: any unfilled ring reads as a grey circle sitting
+            # behind the arc, which is exactly the artefact we are removing. Off the
+            # tab a faint track is useful to show the arc's proportion.
+            if not tab:
+                track = AppKit.NSBezierPath.bezierPath()
+                track.appendBezierPathWithArcWithCenter_radius_startAngle_endAngle_clockwise_(
+                    AppKit.NSMakePoint(cx, cy), r, 0.0, 360.0, False)
+                track.setLineWidth_(lw)
+                AppKit.NSColor.labelColor().colorWithAlphaComponent_(0.25).setStroke()
+                track.stroke()
             sweep = 360.0 * min(100, max(0, pct)) / 100.0
             if sweep > 0:
                 arc = AppKit.NSBezierPath.bezierPath()
