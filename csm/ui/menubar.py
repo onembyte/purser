@@ -410,23 +410,32 @@ STATUS_CORNER = 9.0      # bottom corner radius of the black tab
 STATUS_PAD_X = 8.0
 STATUS_RING_D = 15.0
 STATUS_GAP = 5.0
-STATUS_BG = lambda: _srgb(0, 0, 0, 0.92)       # noqa: E731 - "plain glass black"
+STATUS_BG = lambda: _srgb(0, 0, 0, 1.0)         # noqa: E731 - plain black
 
 
-def _status_image(pct, color, height, show_pct=True):
-    """The whole status item drawn as one image: a black tab with a SQUARE top and
-    rounded bottom corners, the ring, and the percentage.
+def _status_image(pct, color, height, show_pct=True, tab=False, draw_bg=None):
+    """The whole status item drawn as one image.
 
-    Square top is the point — the tab runs the full height of the menu bar so it
-    bleeds into the top edge of the screen and reads as part of the bezel, while the
-    bottom keeps the pill shape. Drawn as one image (rather than image + title) so we
-    own every pixel and the system's grey highlight capsule can be switched off.
+    `tab=True` (the popover is open) paints a plain black tab behind the ring and
+    percentage: SQUARE top so it runs the full height of the item and reads as part
+    of the bezel, rounded bottom so it keeps the pill shape. The caller pins the
+    status item's length to this image's width, otherwise macOS centres the image in
+    a wider item and its own grey highlight shows down both sides of the black.
+
+    `tab=False` (closed) draws the ring and percentage on transparency, so the item
+    looks like any other menu-bar item until you open it.
+
     Returns None on failure; the caller falls back to the plain SF Symbol.
     """
+    # `tab` = the item is wearing the black tab, so style for a black background.
+    # `draw_bg` = this image must paint that black itself (no backdrop available).
+    if draw_bg is None:
+        draw_bg = tab
     try:
         font = AppKit.NSFont.monospacedDigitSystemFontOfSize_weight_(
             12, AppKit.NSFontWeightMedium)
-        label = _attr(f"{int(pct)}%", font, TEXT_PRIMARY()) if show_pct else None
+        text_color = TEXT_PRIMARY() if tab else color
+        label = _attr(f"{int(pct)}%", font, text_color) if show_pct else None
         tw = label.size().width if label is not None else 0.0
         width = STATUS_PAD_X * 2 + STATUS_RING_D + (STATUS_GAP + tw if label else 0.0)
 
@@ -446,13 +455,15 @@ def _status_image(pct, color, height, show_pct=True):
             xf.scaleBy_(scale)
             xf.concat()
 
-            # Rounded rect taller than the canvas: its top corners fall off the top,
-            # leaving a square top and rounded bottom without hand-building the path.
-            AppKit.NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
-                AppKit.NSMakeRect(0, 0, width, height + STATUS_CORNER * 2),
-                STATUS_CORNER, STATUS_CORNER).addClip()
-            STATUS_BG().setFill()
-            AppKit.NSBezierPath.fillRect_(AppKit.NSMakeRect(0, 0, width, height))
+            if draw_bg:
+                # Rounded rect taller than the canvas: its top corners fall off the
+                # top, leaving a square top and rounded bottom without hand-building
+                # the path.
+                AppKit.NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
+                    AppKit.NSMakeRect(0, 0, width, height + STATUS_CORNER * 2),
+                    STATUS_CORNER, STATUS_CORNER).addClip()
+                STATUS_BG().setFill()
+                AppKit.NSBezierPath.fillRect_(AppKit.NSMakeRect(0, 0, width, height))
 
             cx = STATUS_PAD_X + STATUS_RING_D / 2.0
             cy = height / 2.0
@@ -462,7 +473,8 @@ def _status_image(pct, color, height, show_pct=True):
             track.appendBezierPathWithArcWithCenter_radius_startAngle_endAngle_clockwise_(
                 AppKit.NSMakePoint(cx, cy), r, 0.0, 360.0, False)
             track.setLineWidth_(lw)
-            AppKit.NSColor.whiteColor().colorWithAlphaComponent_(0.22).setStroke()
+            (AppKit.NSColor.whiteColor().colorWithAlphaComponent_(0.22) if tab
+             else AppKit.NSColor.labelColor().colorWithAlphaComponent_(0.25)).setStroke()
             track.stroke()
             sweep = 360.0 * min(100, max(0, pct)) / 100.0
             if sweep > 0:
@@ -487,6 +499,50 @@ def _status_image(pct, color, height, show_pct=True):
         return img
     except Exception:
         return None
+
+
+class _StatusBackdrop(AppKit.NSView):
+    """The black tab, drawn behind the status item across the FULL menu-bar height.
+
+    The item's own button is only 22pt tall and macOS reserves ~4pt above and below it
+    (and reverts any attempt to grow the button), so an image on the button can never
+    reach the screen edge. Its container, NSStatusBarContentView, IS the full 30pt —
+    so the tab lives here instead, underneath the button, and runs edge to edge.
+    """
+
+    def initWithFrame_(self, frame):
+        self = objc.super(_StatusBackdrop, self).initWithFrame_(frame)
+        if self is None:
+            return None
+        self._active = False
+        return self
+
+    def setActive_(self, active):
+        active = bool(active)
+        if active != self._active:
+            self._active = active
+            self.setNeedsDisplay_(True)
+
+    def hitTest_(self, point):
+        return None          # purely decorative: never swallow a click
+
+    def drawRect_(self, dirty):
+        try:
+            if not self._active:
+                return
+            b = self.bounds()
+            extra = STATUS_CORNER * 2
+            # Put the rounded corners on the visual BOTTOM and push the top ones off
+            # the canvas, so the tab is square where it meets the screen edge.
+            rect = (AppKit.NSMakeRect(0, -extra, b.size.width, b.size.height + extra)
+                    if self.isFlipped()
+                    else AppKit.NSMakeRect(0, 0, b.size.width, b.size.height + extra))
+            AppKit.NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
+                rect, STATUS_CORNER, STATUS_CORNER).addClip()
+            STATUS_BG().setFill()
+            AppKit.NSBezierPath.fillRect_(b)
+        except Exception:
+            pass
 
 
 # --------------------------------------------------------------------------- monitor
@@ -543,6 +599,7 @@ class MenuBarMonitor(AppKit.NSObject):
             AppKit.NSAppearance.appearanceNamed_(AppKit.NSAppearanceNameDarkAqua))
 
         self._layout_footer()
+        self._last_status = status
         self._render_button(status)
         return self
 
@@ -591,6 +648,7 @@ class MenuBarMonitor(AppKit.NSObject):
         """Called from an NSTimer block every 30s -- must never raise."""
         try:
             status = self._status()
+            self._last_status = status
             self._render_button(status)
             self._card.setStatus_(status)
             self._layout_footer()
@@ -600,6 +658,15 @@ class MenuBarMonitor(AppKit.NSObject):
                 self._popover.setContentSize_(self._card.frame().size)
         except Exception as exc:
             print(f"menu bar refresh failed: {type(exc).__name__}: {exc}")
+
+    @objc.python_method
+    def _paint(self):
+        """Redraw just the status item — used when the popover opens or closes, since
+        the black tab is only worn while it is open."""
+        try:
+            self._render_button(self._last_status or self._status())
+        except Exception as exc:
+            print(f"status repaint failed: {type(exc).__name__}: {exc}")
 
     @objc.python_method
     def _headline(self, status):
@@ -627,8 +694,19 @@ class MenuBarMonitor(AppKit.NSObject):
     def _render_button(self, status):
         button = self._item.button()
         thickness = AppKit.NSStatusBar.systemStatusBar().thickness()
+        # The black tab is worn only while the popover is open.
+        try:
+            tab = bool(self._popover.isShown())
+        except Exception:
+            tab = False
+        full = self._ensure_backdrop()
+        if full:
+            self._backdrop.setActive_(tab)
+        draw_tab = tab and not full          # image tab only without a backdrop
         if not status.get("available"):
-            img = _status_image(0, TEXT_SECONDARY(), thickness, show_pct=False)
+            img = _status_image(0, TEXT_SECONDARY(), thickness, show_pct=False,
+                                tab=tab, draw_bg=draw_tab)
+            self._pin_length(img, draw_tab)
             button.setImage_(img or self._symbol(
                 "gauge.with.dots.needle.bottom.0percent",
                 AppKit.NSColor.secondaryLabelColor()))
@@ -645,7 +723,8 @@ class MenuBarMonitor(AppKit.NSObject):
         if stale:
             color = AppKit.NSColor.secondaryLabelColor()   # don't imply it's current
 
-        img = _status_image(pct, color, thickness)
+        img = _status_image(pct, color, thickness, tab=tab, draw_bg=draw_tab)
+        self._pin_length(img, draw_tab)
         if img is not None:
             button.setImage_(img)
             button.setTitle_("")
@@ -664,6 +743,45 @@ class MenuBarMonitor(AppKit.NSObject):
                                          12, AppKit.NSFontWeightMedium)}))
         button.setToolTip_(f"{_limit_name_short(headline)}: {pct}%"
                            + ("  ·  snapshot is stale" if stale else ""))
+
+    @objc.python_method
+    def _ensure_backdrop(self):
+        """Attach the backdrop once the status item's view tree exists (it does not
+        at init). Returns True when the tab can be drawn full height."""
+        if getattr(self, "_backdrop", None) is not None and self._backdrop.superview():
+            return True
+        try:
+            button = self._item.button()
+            mid = button.superview()
+            content = mid.superview() if mid is not None else None
+            if content is None:
+                return False
+            bd = _StatusBackdrop.alloc().initWithFrame_(content.bounds())
+            bd.setAutoresizingMask_(
+                AppKit.NSViewWidthSizable | AppKit.NSViewHeightSizable)
+            content.addSubview_positioned_relativeTo_(bd, AppKit.NSWindowBelow, None)
+            self._backdrop = bd
+            return True
+        except Exception:
+            self._backdrop = None
+            return False
+
+    @objc.python_method
+    def _pin_length(self, img, tab):
+        """While the tab is worn the item must be exactly as wide as the image.
+
+        With the default variable length macOS pads the item (measured: a 55.3pt
+        image in a 71pt item) and centres the image, so the system's own grey
+        highlight shows down both sides of the black. Pinning the width makes the
+        black the whole item. Released back to variable when the tab comes off.
+        """
+        try:
+            if tab and img is not None:
+                self._item.setLength_(img.size().width)
+            else:
+                self._item.setLength_(AppKit.NSVariableStatusItemLength)
+        except Exception:
+            pass
 
     @objc.python_method
     def _symbol(self, name, color):
@@ -687,12 +805,14 @@ class MenuBarMonitor(AppKit.NSObject):
     # ------------------------------------------------------------------ actions
     def popoverDidClose_(self, notification):
         self._closed_at = time.monotonic()
+        self._paint()              # closed -> take the tab off
 
     def togglePopover_(self, sender):
         try:
             if self._popover.isShown():
                 self._popover.close()
                 self._closed_at = time.monotonic()
+                self._paint()
                 return
             if time.monotonic() - self._closed_at < 0.25:
                 return          # this very click is what dismissed it
@@ -700,6 +820,7 @@ class MenuBarMonitor(AppKit.NSObject):
             button = self._item.button()
             self._popover.showRelativeToRect_ofView_preferredEdge_(
                 button.bounds(), button, AppKit.NSRectEdgeMinY)
+            self._paint()          # now shown -> put the tab on
             # Deliberately NOT activateIgnoringOtherApps_: activating the app pulls
             # Purser's main window in front of whatever you were working in every
             # time you glance at the meter. A transient popover installs its own
