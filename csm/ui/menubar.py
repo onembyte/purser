@@ -503,6 +503,15 @@ STATUS_PAD_X = 8.0
 STATUS_RING_D = 15.0
 STATUS_GAP = 5.0
 STATUS_BG = lambda: _srgb(0, 0, 0, 1.0)         # noqa: E731 - plain black
+# A soft white halo behind the tab. macOS draws its own capsule across the whole item
+# and the tab's body is narrower than that, so the capsule's grey shows down both
+# sides. Rather than fight it, glow into it: black -> white halo -> grey reads as one
+# lit shape instead of two stacked ones.
+STATUS_GLOW = lambda: _srgb(255, 255, 255, 1.0)    # noqa: E731
+STATUS_GLOW_RADIUS = 16.0
+# A single pass at this radius is too faint to reach across the grey; filling the
+# same path twice accumulates the halo without widening it.
+STATUS_GLOW_PASSES = 2
 
 
 def _tab_path(w, h, corner=None, flare=None):
@@ -663,8 +672,17 @@ class _StatusBackdrop(AppKit.NSView):
                 t.translateXBy_yBy_(0.0, b.size.height)
                 t.scaleXBy_yBy_(1.0, -1.0)
                 t.concat()
+            path = _tab_path(b.size.width, b.size.height)
+            # The halo is drawn as a shadow of the tab itself: same outline, no
+            # offset, so it spreads evenly into the grey on both sides.
+            glow = AppKit.NSShadow.alloc().init()
+            glow.setShadowColor_(STATUS_GLOW())
+            glow.setShadowBlurRadius_(STATUS_GLOW_RADIUS)
+            glow.setShadowOffset_(AppKit.NSMakeSize(0.0, 0.0))
+            glow.set()
             STATUS_BG().setFill()
-            _tab_path(b.size.width, b.size.height).fill()
+            for _ in range(max(1, int(STATUS_GLOW_PASSES))):
+                path.fill()
             ctx.restoreGraphicsState()
         except Exception:
             pass
