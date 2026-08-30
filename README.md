@@ -98,8 +98,8 @@ in Python.
 | **Cleanup** | triage by size / age / message count / cost, then move throwaways to the Trash (recoverable) |
 
 - **Live plan meter in the menu bar.** A glanceable `NSStatusItem` shows the percentage
-  of your binding limit while you work, coloured green → orange → red, so you see the
-  plan filling up without opening anything.
+  of your binding limit while you work, coloured green → orange → red. Hover it for a
+  transient usage card; it disappears when you move away, so it never gets in the way.
 - **Resume in one click.** Opens a new Terminal window at the session's working
   directory and runs `claude --resume <id>` — or copies the command if you'd rather.
 - **Honest about money.** You're on a subscription, so every dollar figure is captioned

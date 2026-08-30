@@ -71,11 +71,16 @@ class SidebarViewController(AppKit.NSViewController):
         scroll.setDrawsBackground_(False)
         scroll.setHasVerticalScroller_(True)
         scroll.setAutohidesScrollers_(True)
+        try:
+            scroll.setScrollerStyle_(AppKit.NSScrollerStyleOverlay)
+        except Exception:
+            pass
 
         outline = AppKit.NSOutlineView.alloc().initWithFrame_(scroll.bounds())
         outline.setHeaderView_(None)
         outline.setRowSizeStyle_(AppKit.NSTableViewRowSizeStyleDefault)
         outline.setFloatsGroupRows_(False)
+        outline.setIntercellSpacing_(AppKit.NSMakeSize(0, 0))
         outline.setIndentationPerLevel_(12)
         outline.setBackgroundColor_(AppKit.NSColor.clearColor())
         try:
@@ -270,6 +275,7 @@ class SidebarViewController(AppKit.NSViewController):
             ])
 
         cell.textField().setStringValue_(item.title)
+        cell.setToolTip_(item.payload if item.kind == "project" else item.title)
         if item.symbol:
             img = AppKit.NSImage.imageWithSystemSymbolName_accessibilityDescription_(
                 item.symbol, item.title)

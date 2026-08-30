@@ -1,9 +1,9 @@
 """Menu-bar plan-usage monitor: an NSStatusItem plus a dark popover card.
 
 The status item shows one glanceable percentage (the 5-hour window by default, see
-`_headline`). Clicking it opens an NSPopover whose content is a single custom-drawn
-card: one block per limit, each with a name, its reset time, a rounded meter and a
-"% used" caption.
+`_headline`). Hovering it reveals a transient NSPopover whose content is a single
+custom-drawn card: one block per limit, each with a name, its reset time, a rounded
+meter and a "% used" caption. Leaving both the status item and card dismisses it.
 
 Why this can be "live": Claude Code itself refreshes ~/.claude.json's
 `cachedUsageUtilization` while you work, so re-reading it on a short timer reflects
@@ -21,7 +21,6 @@ Two rules this file has to keep:
 """
 from __future__ import annotations
 
-import math
 import time
 from datetime import datetime, timezone
 
@@ -346,7 +345,8 @@ class PlanCardView(AppKit.NSView):
                 AppKit.NSMakeRect(PAD, y + 1, 21, 15), AppKit.NSZeroRect,
                 AppKit.NSCompositingOperationSourceOver, 1.0, True, None)
             ctx.restoreGraphicsState()
-        _attr("Plan Usage", f_title, TEXT_PRIMARY()).drawAtPoint_(
+        heading = "Codex Usage" if self._provider == "codex" else "Plan Usage"
+        _attr(heading, f_title, TEXT_PRIMARY()).drawAtPoint_(
             AppKit.NSMakePoint(PAD + 28, y))
 
         if st.get("available"):
@@ -510,18 +510,21 @@ STATUS_BG = lambda: _srgb(0, 0, 0, 1.0)         # noqa: E731 - plain black
 # lit shape instead of two stacked ones.
 STATUS_GLOW = lambda: _srgb(255, 255, 255, 1.0)    # noqa: E731
 STATUS_GLOW_RADIUS = 16.0
-# A single pass at this radius is too faint to reach across the grey; filling the
-# same path twice accumulates the halo without widening it.
-STATUS_GLOW_PASSES = 3
+# A few low-cost passes accumulate the halo without widening the tab. The shadow
+# object itself is cached by the backdrop so the animation does not allocate one
+# for every frame.
+STATUS_GLOW_PASSES = 2
 
 # --- tab animation ------------------------------------------------------------
 # The tab hangs from the top edge, so "how far it has dropped" is just its height.
-# A plain slide, no overshoot in either direction: it eases out on the way down so it
-# settles rather than stopping dead, and eases in on the way up so it accelerates
-# away. Both curves are monotonic — nothing here can bounce.
-TAB_OPEN_SECONDS = 0.28
-TAB_CLOSE_SECONDS = 0.20
+# A plain slide, no overshoot in either direction: both transitions ease out so they
+# respond immediately and settle cleanly. Reversing direction continues from the
+# current position, which matters when the pointer skims across the menu-bar edge.
+TAB_OPEN_SECONDS = 0.20
+TAB_CLOSE_SECONDS = 0.16
 TAB_FPS = 60.0
+HOVER_CLOSE_DELAY = 0.28
+HOVER_REFRESH_COOLDOWN = 2.0
 
 
 def _tab_open_progress(t: float) -> float:
@@ -529,7 +532,7 @@ def _tab_open_progress(t: float) -> float:
 
 
 def _tab_close_progress(t: float) -> float:
-    return 1.0 - t ** 3                  # easeInCubic: 1 -> 0
+    return (1.0 - t) ** 3                # easeOutCubic: 1 -> 0
 
 
 def _tab_path(w, h, corner=None, flare=None):
@@ -665,11 +668,19 @@ class _StatusBackdrop(AppKit.NSView):
         self = objc.super(_StatusBackdrop, self).initWithFrame_(frame)
         if self is None:
             return None
+        try:
+            self.setWantsLayer_(True)
+        except Exception:
+            pass
         self._active = False
         self._progress = 0.0        # 0 = fully retracted, 1 = fully dropped
         self._timer = None
         self._t0 = 0.0
         self._closing = False
+        self._from = 0.0
+        self._to = 0.0
+        self._duration = TAB_OPEN_SECONDS
+        self._glow = None
         return self
 
     def setActive_(self, active):
@@ -678,6 +689,13 @@ class _StatusBackdrop(AppKit.NSView):
             return
         self._active = active
         self._closing = not active
+        self._from = self._progress
+        self._to = 1.0 if active else 0.0
+        distance = abs(self._to - self._from)
+        base = TAB_CLOSE_SECONDS if self._closing else TAB_OPEN_SECONDS
+        # Reversing direction keeps the current position instead of jumping to an
+        # endpoint, and only travels for the distance that remains.
+        self._duration = max(0.06, base * distance)
         self._t0 = time.monotonic()
         self._stopTimer()
         if self.window() is None:
@@ -685,7 +703,9 @@ class _StatusBackdrop(AppKit.NSView):
             self._progress = 1.0 if active else 0.0
             self.setNeedsDisplay_(True)
             return
-        self._timer = AppKit.NSTimer.scheduledTimerWithTimeInterval_repeats_block_(
+        # Add the timer once, in common modes. Using scheduledTimer_ and then adding
+        # the same timer again can make event-heavy menu-bar tracking uneven.
+        self._timer = AppKit.NSTimer.timerWithTimeInterval_repeats_block_(
             1.0 / TAB_FPS, True, lambda _t: self._step())
         AppKit.NSRunLoop.currentRunLoop().addTimer_forMode_(
             self._timer, AppKit.NSRunLoopCommonModes)
@@ -703,15 +723,22 @@ class _StatusBackdrop(AppKit.NSView):
     @objc.python_method
     def _step(self):
         try:
-            dur = TAB_CLOSE_SECONDS if self._closing else TAB_OPEN_SECONDS
-            t = (time.monotonic() - self._t0) / dur
+            t = (time.monotonic() - self._t0) / self._duration
             if t >= 1.0:
-                self._progress = 0.0 if self._closing else 1.0
+                self._progress = self._to
                 self._stopTimer()
+                finished = getattr(self, "_on_finished", None)
+                if finished is not None:
+                    try:
+                        finished()
+                    except Exception:
+                        pass
             else:
-                p = (_tab_close_progress(t) if self._closing
-                     else _tab_open_progress(t))
-                self._progress = max(0.0, min(1.0, p))
+                phase = (_tab_close_progress(t) if self._closing
+                         else _tab_open_progress(t))
+                self._progress = self._from + (self._to - self._from) * (
+                    1.0 - phase if self._closing else phase)
+                self._progress = max(0.0, min(1.0, self._progress))
             self.setNeedsDisplay_(True)
         except Exception:
             self._stopTimer()
@@ -744,15 +771,47 @@ class _StatusBackdrop(AppKit.NSView):
             path = _tab_path(b.size.width, drop)
             # The halo is drawn as a shadow of the tab itself: same outline, no
             # offset, so it spreads evenly into the grey on both sides.
-            glow = AppKit.NSShadow.alloc().init()
-            glow.setShadowColor_(STATUS_GLOW())
-            glow.setShadowBlurRadius_(STATUS_GLOW_RADIUS)
-            glow.setShadowOffset_(AppKit.NSMakeSize(0.0, 0.0))
-            glow.set()
+            if self._glow is None:
+                self._glow = AppKit.NSShadow.alloc().init()
+                self._glow.setShadowColor_(STATUS_GLOW())
+                self._glow.setShadowBlurRadius_(STATUS_GLOW_RADIUS)
+                self._glow.setShadowOffset_(AppKit.NSMakeSize(0.0, 0.0))
+            self._glow.set()
             STATUS_BG().setFill()
             for _ in range(max(1, int(STATUS_GLOW_PASSES))):
                 path.fill()
             ctx.restoreGraphicsState()
+        except Exception:
+            pass
+
+
+# ---------------------------------------------------------------------- hover input
+class _HoverTracker(AppKit.NSObject):
+    """Small tracking-area delegate kept alive by the monitor.
+
+    The status item is deliberately hover-first: its popover is useful as a glanceable
+    HUD, but a click should not leave a floating window stuck on screen. A second
+    tracker on the card lets the pointer travel from the menu bar into the popover
+    without racing the close delay.
+    """
+
+    def initWithMonitor_kind_(self, monitor, kind):
+        self = objc.super(_HoverTracker, self).init()
+        if self is None:
+            return None
+        self._monitor = monitor
+        self._kind = kind
+        return self
+
+    def mouseEntered_(self, event):
+        try:
+            self._monitor._hover_changed(self._kind, True)
+        except Exception:
+            pass
+
+    def mouseExited_(self, event):
+        try:
+            self._monitor._hover_changed(self._kind, False)
         except Exception:
             pass
 
@@ -778,9 +837,9 @@ class MenuBarMonitor(AppKit.NSObject):
             cell.setShowsStateBy_(0)
         except Exception:
             pass
-        # No setMenu_: the button drives the popover itself.
-        button.setTarget_(self)
-        button.setAction_("togglePopover:")
+        # No setMenu_: a tracking area drives the transient popover itself.
+        # Do not install a click action. The popover is intentionally transient and
+        # hover-driven; clicking the meter must never turn it into a persistent window.
 
         status = self._status()
         # Every one of these MUST be an instance attribute. A local would be released
@@ -810,17 +869,22 @@ class MenuBarMonitor(AppKit.NSObject):
         # match it even when the system is in Light Mode.
         self._popover.setAppearance_(
             AppKit.NSAppearance.appearanceNamed_(AppKit.NSAppearanceNameDarkAqua))
-        # A transient popover dismisses itself on the mouse-DOWN that precedes this
-        # button's action, so a naive toggle would close and instantly reopen it.
-        # popoverDidClose_ stamps the time; togglePopover_ ignores a reopen inside
-        # the same click.
-        self._closed_at = 0.0
         self._popover.setDelegate_(self)
         self._card.setAppearance_(
             AppKit.NSAppearance.appearanceNamed_(AppKit.NSAppearanceNameDarkAqua))
 
         self._layout_footer()
         self._last_status = status
+        self._last_refresh_at = time.monotonic()
+        self._close_timer = None
+        self._hover_status = False
+        self._hover_card = False
+        self._status_tracker = _HoverTracker.alloc().initWithMonitor_kind_(self, "status")
+        self._card_tracker = _HoverTracker.alloc().initWithMonitor_kind_(self, "card")
+        self._status_tracking_area = self._tracking_area(button, self._status_tracker)
+        self._card_tracking_area = self._tracking_area(self._card, self._card_tracker)
+        button.addTrackingArea_(self._status_tracking_area)
+        self._card.addTrackingArea_(self._card_tracking_area)
         self._render_button(status)
         return self
 
@@ -899,6 +963,7 @@ class MenuBarMonitor(AppKit.NSObject):
         try:
             status = self._status()
             self._last_status = status
+            self._last_refresh_at = time.monotonic()
             self._card.setStatus_(status)
             self._card.setCodexStatus_(self._codex_status())
             self._render_button(self._shown_status())
@@ -909,6 +974,73 @@ class MenuBarMonitor(AppKit.NSObject):
                 self._popover.setContentSize_(self._card.frame().size)
         except Exception as exc:
             print(f"menu bar refresh failed: {type(exc).__name__}: {exc}")
+
+    @objc.python_method
+    def _tracking_area(self, view, owner):
+        options = (AppKit.NSTrackingMouseEnteredAndExited
+                   | AppKit.NSTrackingActiveAlways
+                   | AppKit.NSTrackingInVisibleRect)
+        return AppKit.NSTrackingArea.alloc().initWithRect_options_owner_userInfo_(
+            view.bounds(), options, owner, None)
+
+    @objc.python_method
+    def _hover_changed(self, kind, inside):
+        """Keep the card alive while the pointer is over either side of the gap."""
+        if kind == "status":
+            self._hover_status = bool(inside)
+        else:
+            self._hover_card = bool(inside)
+        if inside:
+            self._cancel_close()
+            if kind == "status":
+                self._show_for_hover()
+        else:
+            self._schedule_close()
+
+    @objc.python_method
+    def _show_for_hover(self):
+        try:
+            if self._popover.isShown():
+                return
+            now = time.monotonic()
+            if now - self._last_refresh_at >= HOVER_REFRESH_COOLDOWN:
+                self.refresh()
+            button = self._item.button()
+            self._popover.showRelativeToRect_ofView_preferredEdge_(
+                button.bounds(), button, AppKit.NSRectEdgeMinY)
+            self._paint()
+        except Exception as exc:
+            print(f"popover hover open failed: {type(exc).__name__}: {exc}")
+
+    @objc.python_method
+    def _cancel_close(self):
+        if self._close_timer is not None:
+            try:
+                self._close_timer.invalidate()
+            except Exception:
+                pass
+            self._close_timer = None
+
+    @objc.python_method
+    def _schedule_close(self):
+        self._cancel_close()
+        self._close_timer = AppKit.NSTimer.timerWithTimeInterval_repeats_block_(
+            HOVER_CLOSE_DELAY, False, lambda _timer: self._close_if_clear())
+        AppKit.NSRunLoop.currentRunLoop().addTimer_forMode_(
+            self._close_timer, AppKit.NSRunLoopCommonModes)
+
+    @objc.python_method
+    def _close_if_clear(self):
+        self._close_timer = None
+        if self._hover_status or self._hover_card:
+            return
+        try:
+            if self._popover.isShown():
+                self._popover.close()
+            else:
+                self._paint()
+        except Exception as exc:
+            print(f"popover hover close failed: {type(exc).__name__}: {exc}")
 
     @objc.python_method
     def _shown_status(self):
@@ -960,12 +1092,18 @@ class MenuBarMonitor(AppKit.NSObject):
         thickness = AppKit.NSStatusBar.systemStatusBar().thickness()
         # The black tab is worn only while the popover is open.
         try:
-            tab = bool(self._popover.isShown())
+            shown = bool(self._popover.isShown())
         except Exception:
-            tab = False
+            shown = False
         full = self._ensure_backdrop()
         if full:
-            self._backdrop.setActive_(tab)
+            # The backdrop follows the popover's target state. Artwork follows the
+            # in-flight state too, so closing does not swap to colored text while the
+            # black tab is still retracting.
+            self._backdrop.setActive_(shown)
+            tab = shown or self._backdrop._progress > 0.001
+        else:
+            tab = shown
         draw_tab = tab and not full          # image tab only without a backdrop
         if not status.get("available"):
             img = _status_image(0, TEXT_SECONDARY(), thickness, show_pct=False,
@@ -1023,6 +1161,7 @@ class MenuBarMonitor(AppKit.NSObject):
             bd = _StatusBackdrop.alloc().initWithFrame_(content.bounds())
             bd.setAutoresizingMask_(
                 AppKit.NSViewWidthSizable | AppKit.NSViewHeightSizable)
+            bd._on_finished = self._paint
             content.addSubview_positioned_relativeTo_(bd, AppKit.NSWindowBelow, None)
             self._backdrop = bd
             return True
@@ -1070,30 +1209,8 @@ class MenuBarMonitor(AppKit.NSObject):
 
     # ------------------------------------------------------------------ actions
     def popoverDidClose_(self, notification):
-        self._closed_at = time.monotonic()
+        self._cancel_close()
         self._paint()              # closed -> take the tab off
-
-    def togglePopover_(self, sender):
-        try:
-            if self._popover.isShown():
-                self._popover.close()
-                self._closed_at = time.monotonic()
-                self._paint()
-                return
-            if time.monotonic() - self._closed_at < 0.25:
-                return          # this very click is what dismissed it
-            self.refresh()                       # never open on a stale card
-            button = self._item.button()
-            self._popover.showRelativeToRect_ofView_preferredEdge_(
-                button.bounds(), button, AppKit.NSRectEdgeMinY)
-            self._paint()          # now shown -> put the tab on
-            # Deliberately NOT activateIgnoringOtherApps_: activating the app pulls
-            # Purser's main window in front of whatever you were working in every
-            # time you glance at the meter. A transient popover installs its own
-            # event monitor, so it still takes key focus and still dismisses on an
-            # outside click without the app coming forward.
-        except Exception as exc:
-            print(f"popover toggle failed: {type(exc).__name__}: {exc}")
 
     def selectClaude_(self, sender):
         self._select("claude")
@@ -1115,7 +1232,7 @@ class MenuBarMonitor(AppKit.NSObject):
     def openPlan_(self, sender):
         try:
             self._popover.close()
-            self._closed_at = time.monotonic()
+            self._cancel_close()
         except Exception:
             pass
         if self._on_open:

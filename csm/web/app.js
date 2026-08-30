@@ -82,6 +82,15 @@ function el(tag, cls, text) {
   return n;
 }
 
+function activateWithKeyboard(node, handler) {
+  node.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      handler(event);
+    }
+  });
+}
+
 /* ------------------------------------------------------------------ toasts */
 function toast(message, isError = false) {
   const n = el("div", "toast" + (isError ? " error" : ""), message);
@@ -121,17 +130,25 @@ const progress = (() => {
 const root = document.getElementById("root");
 const views = {};
 let current = { view: "overview", params: {} };
+let navigationToken = 0;
 
 function register(name, fn) { views[name] = fn; }
+function isCurrentNavigation(token) { return token === navigationToken; }
 
 async function navigate(view, params = {}) {
-  if (view === "reindex") { csm.call("reindex"); toast("Rescanning sessions…"); return; }
+  if (view === "reindex") {
+    csm.call("reindex").catch((err) => toast(err.message, true));
+    toast("Rescanning sessions…");
+    return;
+  }
+  const token = ++navigationToken;
   current = { view, params };
   const fn = views[view];
   if (!fn) return;
   try {
-    await fn(root, params);
+    await fn(root, params, token);
   } catch (err) {
+    if (!isCurrentNavigation(token)) return;
     console.error(err);
     root.innerHTML = "";
     const v = el("div", "view");
@@ -151,6 +168,9 @@ csm.on("liveSessions", () => {
 /* ------------------------------------------------------------------ session list */
 function sessionRow(s, onOpen) {
   const row = el("div", "session-row");
+  row.setAttribute("role", "button");
+  row.setAttribute("tabindex", "0");
+  row.setAttribute("aria-label", `Open ${s.title || "Untitled session"}`);
   row.append(el("div", "dot" + (s.live ? " live" : "")));
 
   const title = el("div", "s-title");
@@ -172,13 +192,15 @@ function sessionRow(s, onOpen) {
   row.append(el("div", "s-meta", fmt.ago(s.lastTs)));
   row.append(el("div", "s-cost" + (s.cost ? "" : " zero"), fmt.money(s.cost)));
 
-  row.addEventListener("dblclick", () => onOpen && onOpen(s));
+  row.addEventListener("click", () => onOpen && onOpen(s));
+  activateWithKeyboard(row, () => onOpen && onOpen(s));
   return row;
 }
 
-register("project", async (host, params) => {
+register("project", async (host, params, token) => {
   const sort = params.sort || "recent";
   const data = await csm.call("getSessions", { cwd: params.cwd || null, sort });
+  if (!isCurrentNavigation(token)) return;
 
   host.innerHTML = "";
   const v = el("div", "view");
@@ -322,7 +344,7 @@ function renderMessage(m) {
 /* A window of pages around the viewport. Pages load on demand via IntersectionObserver;
    when too much is mounted we unmount the far end and substitute a spacer of the exact
    measured height so the scrollbar never jumps. */
-function makeTranscript(sessionId, total, jumpTo) {
+function makeTranscript(sessionId, total, jumpTo, token) {
   const wrap = el("div", "transcript");
   const topSentinel = el("div", "sentinel");
   const botSentinel = el("div", "sentinel");
@@ -340,6 +362,7 @@ function makeTranscript(sessionId, total, jumpTo) {
     busy = true;
     try {
       const p = await csm.call("getTranscript", { id: sessionId, start, limit: PAGE });
+      if (!isCurrentNavigation(token)) return;
       if (!p.messages.length) return;
       const frag = document.createDocumentFragment();
       p.messages.forEach((m) => frag.append(renderMessage(m)));
@@ -357,7 +380,7 @@ function makeTranscript(sessionId, total, jumpTo) {
       if (hi === null) hi = p.start + p.count;
       trim(where);
     } catch (e) {
-      toast(e.message, true);
+      if (isCurrentNavigation(token)) toast(e.message, true);
     } finally {
       busy = false;
     }
@@ -410,9 +433,10 @@ function makeTranscript(sessionId, total, jumpTo) {
 }
 
 /** Load the final page and scroll to it — the opt-in version of the old auto-scroll. */
-async function jumpToLatest(sessionId, total, host) {
+async function jumpToLatest(sessionId, total, host, token) {
   const start = Math.max(0, total - PAGE);
   const p = await csm.call("getTranscript", { id: sessionId, start, limit: PAGE });
+  if (!isCurrentNavigation(token)) return;
   const wrap = host.querySelector(".transcript");
   if (!wrap) return;
   wrap.querySelectorAll(".msg").forEach((n) => n.remove());
@@ -420,12 +444,15 @@ async function jumpToLatest(sessionId, total, host) {
   const frag = document.createDocumentFragment();
   p.messages.forEach((m) => frag.append(renderMessage(m)));
   wrap.insertBefore(frag, wrap.querySelector(".sentinel").nextSibling);
-  requestAnimationFrame(() => { root.scrollTop = root.scrollHeight; });
+  requestAnimationFrame(() => {
+    if (isCurrentNavigation(token)) root.scrollTop = root.scrollHeight;
+  });
 }
 
 /* ------------------------------------------------------------------ session view */
-register("session", async (host, params) => {
+register("session", async (host, params, token) => {
   const s = await csm.call("getSession", { id: params.id });
+  if (!isCurrentNavigation(token)) return;
 
   host.innerHTML = "";
   const v = el("div", "view");
@@ -516,12 +543,12 @@ register("session", async (host, params) => {
   }
   thead.append(tnote);
   const latest = el("button", "btn", "Jump to latest ↓");
-  latest.onclick = () => jumpToLatest(s.id, s.messageCount, host);
+  latest.onclick = () => jumpToLatest(s.id, s.messageCount, host, token);
   thead.append(latest);
   v.append(thead);
 
   host.append(v);
-  v.append(makeTranscript(s.id, s.messageCount, params.jumpTo));
+  v.append(makeTranscript(s.id, s.messageCount, params.jumpTo, token));
 
   // Navigating from a scrolled list would otherwise inherit that scroll offset and
   // land mid-transcript with the header off-screen.
@@ -541,8 +568,9 @@ function soon(title, sub) {
   };
 }
 
-register("overview", async (host) => {
+register("overview", async (host, params, token) => {
   const o = await csm.call("getOverview");
+  if (!isCurrentNavigation(token)) return;
   const t = o.totals;
 
   host.innerHTML = "";
@@ -551,7 +579,8 @@ register("overview", async (host) => {
   const sub = el("div", "view-sub");
   sub.append(document.createTextNode(
     `${o.totals.sessions} sessions · dollar figures are API-equivalent list prices, not `));
-  const planLink = el("a", "inline-link", "your subscription usage");
+  const planLink = el("button", "inline-link", "your subscription usage");
+  planLink.type = "button";
   planLink.onclick = () => { navigate("plan", {}); };
   sub.append(planLink);
   v.append(sub);
@@ -614,6 +643,7 @@ register("overview", async (host) => {
   // WKWebView, e.g. during a snapshot, never ticks rAF), then redraw once laid out so
   // clientWidth is exact. The chart fns replaceChildren, so the second call is idempotent.
   const drawCharts = () => {
+    if (!isCurrentNavigation(token)) return;
     if (o.daily.length) Charts.dailyStacked(plot1, o.daily, o.models);
     else plot1.replaceChildren(el("div", "empty", "No spend recorded yet"));
     Charts.hBars(plot2, o.byProject.map((p) => ({
@@ -637,7 +667,7 @@ function snippetNode(s) {
   return box;
 }
 
-register("search", async (host, params) => {
+register("search", async (host, params, token) => {
   const q = (params.q || "").trim();
   host.innerHTML = "";
   const v = el("div", "view");
@@ -650,6 +680,7 @@ register("search", async (host, params) => {
   }
 
   const r = await csm.call("search", { q });
+  if (!isCurrentNavigation(token)) return;
   v.append(el("div", "view-sub",
     r.total ? `${r.total}${r.truncated ? "+" : ""} matches in ${r.sessions.length} ` +
               `session${r.sessions.length === 1 ? "" : "s"} for “${q}”`
@@ -658,9 +689,14 @@ register("search", async (host, params) => {
   r.sessions.forEach((g) => {
     const block = el("div", "hit-group");
     const h = el("div", "hit-head");
+    h.setAttribute("role", "button");
+    h.setAttribute("tabindex", "0");
+    h.setAttribute("aria-label", `Open ${g.title || "Untitled session"}`);
     h.append(el("span", "hit-title", g.title || "Untitled session"),
              el("span", "hit-proj", g.project));
-    h.onclick = () => navigate("session", { id: g.id });
+    const openGroup = () => navigate("session", { id: g.id });
+    h.onclick = openGroup;
+    activateWithKeyboard(h, openGroup);
     block.append(h);
 
     g.hits.slice(0, 6).forEach((hit) => {
@@ -668,8 +704,13 @@ register("search", async (host, params) => {
       row.append(el("span", "hit-role", hit.role === "user" ? "you"
                                      : hit.role === "title" ? "title" : "claude"));
       row.append(snippetNode(hit.snippet));
+      row.setAttribute("role", "button");
+      row.setAttribute("tabindex", "0");
+      row.setAttribute("aria-label", `Open matching message in ${g.title || "session"}`);
       // Jump straight to the matching message inside the transcript.
-      row.onclick = () => navigate("session", { id: g.id, jumpTo: hit.msgIdx });
+      const openHit = () => navigate("session", { id: g.id, jumpTo: hit.msgIdx });
+      row.onclick = openHit;
+      activateWithKeyboard(row, openHit);
       block.append(row);
     });
     if (g.hits.length > 6) {
@@ -724,8 +765,9 @@ function relTime(iso) {
   return diff < 0 ? `${unit} ago` : `in ${unit}`;
 }
 
-register("plan", async (host) => {
+register("plan", async (host, params, token) => {
   const p = await csm.call("getPlan");
+  if (!isCurrentNavigation(token)) return;
   host.innerHTML = "";
   const v = el("div", "view");
   v.append(el("div", "view-title", "Plan usage"));
@@ -826,6 +868,9 @@ register("plan", async (host) => {
   const list = el("div", "session-list");
   p.sessions.forEach((s) => {
     const row = el("div", "session-row plan-row");
+    row.setAttribute("role", "button");
+    row.setAttribute("tabindex", "0");
+    row.setAttribute("aria-label", `Open ${s.title || "Untitled session"}`);
     row.append(el("div", "dot" + (s.live ? " live" : "")));
     const title = el("div", "s-title");
     title.append(el("div", null, s.title || "Untitled session"));
@@ -839,7 +884,9 @@ register("plan", async (host) => {
     row.append(barWrap);
     row.append(el("div", "s-meta", `${(s.share * 100).toFixed(1)}%`));
     row.append(el("div", "s-meta", fmt.tokens(s.tokens)));
-    row.addEventListener("dblclick", () => navigate("session", { id: s.id }));
+    const open = () => navigate("session", { id: s.id });
+    row.addEventListener("click", open);
+    activateWithKeyboard(row, open);
     list.append(row);
   });
   v.append(list);
@@ -847,9 +894,12 @@ register("plan", async (host) => {
 
   // Model split is a composition (2–6 slices of one whole), not a bar chart.
   // Draw immediately then redraw on layout (see the overview note on rAF/snapshots).
-  const drawPlan = () => Charts.composition(plot, p.models.map((m) => ({
-    name: m.name, value: m.share, slot: m.slot,
-  })), { valueLabel: "Share" });
+  const drawPlan = () => {
+    if (!isCurrentNavigation(token)) return;
+    Charts.composition(plot, p.models.map((m) => ({
+      name: m.name, value: m.share, slot: m.slot,
+    })), { valueLabel: "Share" });
+  };
   drawPlan();
   requestAnimationFrame(drawPlan);
 });
@@ -857,9 +907,10 @@ register("plan", async (host) => {
 /* ------------------------------------------------------------------ cleanup */
 const selected = new Set();
 
-register("cleanup", async (host, params) => {
+register("cleanup", async (host, params, token) => {
   const sort = params.sort || "size";
   const data = await csm.call("getCleanupList", { sort });
+  if (!isCurrentNavigation(token)) return;
   // Drop selections for sessions that no longer exist in the list.
   const alive = new Set(data.sessions.map((s) => s.id));
   [...selected].forEach((id) => { if (!alive.has(id)) selected.delete(id); });
@@ -899,7 +950,7 @@ register("cleanup", async (host, params) => {
 
   const list = el("div", "session-list");
   data.sessions.forEach((s) => {
-    const row = el("div", "session-row cleanup-row");
+    const row = el("div", "session-row cleanup-row" + (s.locked ? " locked-row" : ""));
 
     const cb = el("input");
     cb.type = "checkbox";
@@ -908,6 +959,7 @@ register("cleanup", async (host, params) => {
     cb.title = s.locked ? "This session is running right now" : "";
     cb.onchange = () => {
       cb.checked ? selected.add(s.id) : selected.delete(s.id);
+      row.classList.toggle("selected", cb.checked);
       updateFooter();
     };
     row.append(cb);
@@ -927,6 +979,12 @@ register("cleanup", async (host, params) => {
     row.append(el("div", "s-meta", fmt.bytes(s.totalBytes)));
     row.append(el("div", "s-meta", fmt.ago(s.lastTs)));
     row.append(el("div", "s-cost" + (s.cost ? "" : " zero"), fmt.money(s.cost)));
+    row.addEventListener("click", (event) => {
+      if (s.locked || event.target.closest("input, button, a")) return;
+      cb.checked = !cb.checked;
+      cb.dispatchEvent(new Event("change", { bubbles: false }));
+    });
+    row.classList.toggle("selected", cb.checked);
     list.append(row);
   });
   v.append(list);

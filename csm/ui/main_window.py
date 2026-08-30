@@ -102,6 +102,10 @@ class MainWindowController(AppKit.NSObject):
             win.setToolbarStyle_(AppKit.NSWindowToolbarStyleUnified)
         except Exception:
             pass
+        try:
+            win.setTitlebarSeparatorStyle_(AppKit.NSTitlebarSeparatorStyleLine)
+        except Exception:
+            pass
 
         self._window = win
         self._toolbar = toolbar
